@@ -1,0 +1,25 @@
+# Temporary and working directories
+inbox/
+processed/
+sessions/
+
+# Scripts (keep them local)
+*.sh
+
+# Claude files
+CLAUDE.md
+CLAUDE_SESSION.md
+
+# Local state files
+current_project.txt
+config.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
