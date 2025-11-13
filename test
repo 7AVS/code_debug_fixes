@@ -1,5 +1,21 @@
 CASE 
-    /* Student Loans */
+    /* AUTO LOANS */
+    WHEN LN_DESC IN ('AUTOPL', 'AUTONP')
+    THEN 'Auto Loan'
+    
+    /* PERSONAL LOANS - Unsecured/General Purpose */
+    WHEN LN_DESC IN ('FR', 'FIXED', 'VR', 'V.R.LN', 'INSTAL', 'N.TERM', 'TER_LN', 'TIMRG', 'HIL')
+    THEN 'Personal Loan'
+    
+    /* INDIRECT LENDING */
+    WHEN LN_DESC IN ('FRINLN')
+    THEN 'Indirect Loan'
+    
+    /* REVOLVING CREDIT */
+    WHEN LN_DESC IN ('RCL', 'RCLSBC', 'RCLSEC')
+    THEN 'Revolving Credit'
+    
+    /* STUDENT LOANS */
     WHEN LN_DESC IN ('ALTA-A', 'ALTA-B', 'B.C.-A', 'B.C.-B', 'CAN-A', 'CAN-B', 'FEDDIR',
                      'FRALTB', 'FRBCB', 'FRCANB', 'FRMANB', 'FRNBB', 'FRNFLB', 'FRNSB', 'FRPEIB', 'FRSKB',
                      'MAN-A', 'MAN-B', 'N.S.-A', 'N.S.-B', 'ONT-A', 'ONT-B', 'QUE-A', 'QUE-B',
@@ -7,43 +23,37 @@ CASE
                      'VRNBA', 'VRNBB', 'VRNFLA', 'VRNFLB', 'VRNSA', 'VRNSB', 'VRPEIA', 'VRPEIB', 'VRSKA', 'VRSKB')
     THEN 'Student Loan'
     
-    /* Personal Lending */
-    WHEN LN_DESC IN ('AUTOPL', 'AUTONP', 'FIXED', 'FRINLN', 'FR', 'INSTAL', 'N.TERM', 
-                     'TER_LN', 'TIMRG', 'TP/PC', 'VR', 'V.R.LN', 'HIL')
-    THEN 'Personal Loan'
+    /* SMALL BUSINESS */
+    WHEN LN_DESC IN ('SBDB', 'SMLBUS', 'GGSBDB')
+    THEN 'Small Business Loan'
     
-    /* Revolving Credit */
-    WHEN LN_DESC IN ('RCL', 'RCLSBC', 'RCLSEC')
-    THEN 'Revolving Credit'
+    /* COMMERCIAL & INDUSTRIAL */
+    WHEN LN_DESC IN ('DEMAND', 'IBVRDM', 'INDBUS', 'ASSCOR', 'CONSUB', 'CITETC', 'TEN-LN', 'TP/PC', 'OTH-BR')
+    THEN 'Commercial & Industrial'
     
-    /* Business & Commercial */
-    WHEN LN_DESC IN ('ASSCOR', 'CITETC', 'CONSUB', 'DEMAND', 'IBVRDM', 'INDBUS', 
-                     'OTH-BR', 'PRVGOV', 'TEN-LN')
-    THEN 'Business & Commercial'
-    
-    /* Agriculture & Resource */
+    /* AGRICULTURE & RESOURCE */
     WHEN LN_DESC IN ('ROYFRM', 'ROYFRMD', 'RFRMRG', 'INDFSH', 'FSHDMD', 'GRNOTH', 'GRNWHT')
     THEN 'Agriculture & Resource'
     
-    /* Trade Finance */
-    WHEN LN_DESC IN ('B/ACAN', 'TB-DMD', 'TB-TER', 'TBPREC', 'TBTIME')
+    /* TRADE FINANCE */
+    WHEN LN_DESC IN ('TB-DMD', 'TB-TER', 'TBPREC', 'TBTIME', 'B/ACAN')
     THEN 'Trade Finance'
     
-    /* Government/Bond */
-    WHEN LN_DESC IN ('G/GOTH', 'G/GUAR', 'GGSBDB', 'PSBPSP', 'SBDB', 'SMLBUS')
+    /* GOVERNMENT/BOND */
+    WHEN LN_DESC IN ('G/GOTH', 'G/GUAR', 'PRVGOV', 'PSBPSP')
     THEN 'Government/Bond'
     
-    /* US Dollar */
+    /* US DOLLAR PRODUCTS */
     WHEN LN_DESC IN ('US-B/A', 'US-DMD', 'US-LIB', 'US-TRB', 'USTIME')
     THEN 'US Dollar Loan'
     
-    /* Specialty/Structured */
+    /* SPECIALTY/POOLED/RECOURSE */
     WHEN LN_DESC IN ('PL-FP', 'PL_FR', 'PL-LP', 'PL-RR', 'CSBMSP', 'CSBPSP', 'ODWOCB')
-    THEN 'Specialty/Structured'
+    THEN 'Specialty/Pooled'
     
-    /* Staff */
+    /* STAFF */
     WHEN LN_DESC IN ('STAFF')
-    THEN 'Staff/Internal'
+    THEN 'Staff Loan'
     
     ELSE 'Other'
-END AS LOAN_CATEGORY
+END AS LOAN_CATEGORY, 
