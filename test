@@ -1,92 +1,150 @@
-CASE 
-    /* Fixed Rate Products */
-    WHEN LN_DESC IN ('FIXED', 'FR', 'FRINLN', 'FRALTB', 'FRBCB', 'FRCANB', 'FRMANB', 
-                     'FRNBB', 'FRNFLB', 'FRNSB', 'FRPEIB', 'FRSKB')
-    THEN 'Fixed Rate Loan'
-    
-    /* Variable Rate Products */
-    WHEN LN_DESC IN ('VR', 'V.R.LN', 'VRALTA', 'VRALTB', 'VRBCA', 'VRBCB', 'VRCANA', 'VRCANB',
-                     'VRMANA', 'VRMANB', 'VRNBA', 'VRNBB', 'VRNFLA', 'VRNFLB', 'VRNSA', 'VRNSB',
-                     'VRPEIA', 'VRPEIB', 'VRSKA', 'VRSKB')
-    THEN 'Variable Rate Loan'
-    
-    /* Student Loans (non-rate specific) */
-    WHEN LN_DESC IN ('ALTA-A', 'ALTA-B', 'B.C.-A', 'B.C.-B', 'CAN-A', 'CAN-B', 
-                     'MAN-A', 'MAN-B', 'N.S.-A', 'N.S.-B', 'ONT-A', 'ONT-B', 'QUE-A', 'QUE-B',
-                     'FEDDIR')
-    THEN 'Student Loan'
-    
-    /* Autoplan */
-    WHEN LN_DESC IN ('AUTOPL', 'AUTONP')
-    THEN 'Autoplan Loan'
-    
-    /* Royal Credit Line */
-    WHEN LN_DESC IN ('RCL', 'RCLSBC', 'RCLSEC')
-    THEN 'Royal Credit Line'
-    
-    /* RoyFarm */
-    WHEN LN_DESC IN ('ROYFRM', 'ROYFRMD', 'RFRMRG')
-    THEN 'RoyFarm Loan'
-    
-    /* Fisherman */
-    WHEN LN_DESC IN ('INDFSH', 'FSHDMD')
-    THEN 'Fisherman Loan'
-    
-    /* Grain */
-    WHEN LN_DESC IN ('GRNOTH', 'GRNWHT')
-    THEN 'Grain Loan'
-    
-    /* Trade Bill */
-    WHEN LN_DESC IN ('TB-DMD', 'TB-TER', 'TBPREC', 'TBTIME')
-    THEN 'Trade Bill Loan'
-    
-    /* US Dollar */
-    WHEN LN_DESC IN ('US-B/A', 'US-DMD', 'US-LIB', 'US-TRB', 'USTIME')
-    THEN 'US Dollar Loan'
-    
-    /* Small Business Development Bond */
-    WHEN LN_DESC IN ('SBDB', 'GGSBDB')
-    THEN 'Small Business Development Bond'
-    
-    /* Government Guaranteed / Small Business */
-    WHEN LN_DESC IN ('G/GOTH', 'G/GUAR', 'SMLBUS')
-    THEN 'Government Guaranteed Loan'
-    
-    /* Savings Bond */
-    WHEN LN_DESC IN ('CSBMSP', 'CSBPSP', 'PSBPSP')
-    THEN 'Savings Bond Loan'
-    
-    /* Installment/Term */
-    WHEN LN_DESC IN ('INSTAL', 'TER_LN', 'N.TERM', 'TIMRG', 'TP/PC', 'TBTIME')
-    THEN 'Installment/Term Loan'
-    
-    /* Demand Loan */
-    WHEN LN_DESC IN ('DEMAND', 'TB-DMD', 'US-DMD', 'FSHDMD', 'ROYFRMD')
-    THEN 'Demand Loan'
-    
-    /* Commercial/Business */
-    WHEN LN_DESC IN ('INDBUS', 'IBVRDM', 'ASSCOR', 'CONSUB', 'CITETC', 'TEN-LN', 'B/ACAN')
-    THEN 'Commercial/Business Loan'
-    
-    /* Home Improvement */
-    WHEN LN_DESC IN ('HIL')
-    THEN 'Home Improvement Loan'
-    
-    /* Provincial Government */
-    WHEN LN_DESC IN ('PRVGOV')
-    THEN 'Provincial Government Loan'
-    
-    /* Pooled/Recourse */
-    WHEN LN_DESC IN ('PL-FP', 'PL_FR', 'PL-LP', 'PL-RR')
-    THEN 'Pooled/Recourse Loan'
-    
-    /* Staff */
-    WHEN LN_DESC IN ('STAFF')
-    THEN 'Staff Loan'
-    
-    /* Other */
-    WHEN LN_DESC IN ('OTH-BR', 'ODWOCB')
-    THEN 'Other/Special Loan'
-    
-    ELSE 'Uncategorized'
-END AS LOAN_CATEGORY, 
+Got it. Let me create a set of PROC SQL queries for your EDA on the LN_OPENED table:
+/* 1. Distribution of LOAN_CATEGORY by STATUS */
+PROC SQL;
+    CREATE TABLE loan_category_status AS
+    SELECT 
+        LOAN_CATEGORY,
+        STATUS,
+        COUNT(*) AS n_loans,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
+        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY, STATUS
+    ORDER BY LOAN_CATEGORY, STATUS;
+QUIT;
+
+/* 2. Overall LOAN_CATEGORY distribution */
+PROC SQL;
+    CREATE TABLE loan_category_summary AS
+    SELECT 
+        LOAN_CATEGORY,
+        COUNT(*) AS n_loans,
+        COUNT(DISTINCT CLNT_NO) AS n_clients,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
+        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2,
+        MEDIAN(AUTHORIZED_AMT) AS median_authorized FORMAT=DOLLAR12.2
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY
+    ORDER BY n_loans DESC;
+QUIT;
+
+/* 3. Delinquency by STATUS - Understanding the relationship */
+PROC SQL;
+    CREATE TABLE delinq_status AS
+    SELECT 
+        STATUS,
+        DFR_PYMT_IND,
+        COUNT(*) AS n_loans,
+        CALCULATED n_loans / SUM(CALCULATED n_loans) AS pct_of_status FORMAT=PERCENT8.2
+    FROM LN_OPENED
+    GROUP BY STATUS, DFR_PYMT_IND
+    ORDER BY STATUS, DFR_PYMT_IND;
+QUIT;
+
+/* 4. Delinquency by LOAN_CATEGORY and STATUS */
+PROC SQL;
+    CREATE TABLE delinq_category_status AS
+    SELECT 
+        LOAN_CATEGORY,
+        STATUS,
+        DFR_PYMT_IND,
+        COUNT(*) AS n_loans
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY, STATUS, DFR_PYMT_IND
+    ORDER BY LOAN_CATEGORY, STATUS, DFR_PYMT_IND;
+QUIT;
+
+/* 5. Guarantee Amount (GUAR_AMT) analysis */
+PROC SQL;
+    CREATE TABLE guarantee_summary AS
+    SELECT 
+        LOAN_CATEGORY,
+        COUNT(*) AS n_loans,
+        SUM(CASE WHEN GUAR_AMT > 0 THEN 1 ELSE 0 END) AS n_guaranteed,
+        CALCULATED n_guaranteed / CALCULATED n_loans AS pct_guaranteed FORMAT=PERCENT8.2,
+        SUM(GUAR_AMT) AS total_guar_amt FORMAT=DOLLAR20.2,
+        MEAN(GUAR_AMT) AS avg_guar_amt FORMAT=DOLLAR12.2,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
+        CALCULATED total_guar_amt / CALCULATED total_authorized AS guar_to_auth_ratio FORMAT=PERCENT8.2
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY
+    ORDER BY n_loans DESC;
+QUIT;
+
+/* 6. LOAN_TYPE distribution */
+PROC SQL;
+    CREATE TABLE loan_type_summary AS
+    SELECT 
+        LOAN_TYPE,
+        COUNT(*) AS n_loans,
+        COUNT(DISTINCT CLNT_NO) AS n_clients,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2
+    FROM LN_OPENED
+    GROUP BY LOAN_TYPE
+    ORDER BY n_loans DESC;
+QUIT;
+
+/* 7. STATUS distribution overall */
+PROC SQL;
+    CREATE TABLE status_summary AS
+    SELECT 
+        STATUS,
+        COUNT(*) AS n_loans,
+        COUNT(DISTINCT CLNT_NO) AS n_clients,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
+        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
+    FROM LN_OPENED
+    GROUP BY STATUS
+    ORDER BY n_loans DESC;
+QUIT;
+
+/* 8. Client-level summary - Multiple loans per client */
+PROC SQL;
+    CREATE TABLE client_loan_counts AS
+    SELECT 
+        COUNT(DISTINCT CLNT_NO) AS total_clients,
+        SUM(CASE WHEN loan_count = 1 THEN 1 ELSE 0 END) AS clients_1_loan,
+        SUM(CASE WHEN loan_count = 2 THEN 1 ELSE 0 END) AS clients_2_loans,
+        SUM(CASE WHEN loan_count >= 3 THEN 1 ELSE 0 END) AS clients_3plus_loans
+    FROM (
+        SELECT 
+            CLNT_NO,
+            COUNT(*) AS loan_count
+        FROM LN_OPENED
+        GROUP BY CLNT_NO
+    );
+QUIT;
+
+/* 9. Cross-tab: LOAN_CATEGORY by LOAN_TYPE */
+PROC SQL;
+    CREATE TABLE category_type_cross AS
+    SELECT 
+        LOAN_CATEGORY,
+        LOAN_TYPE,
+        COUNT(*) AS n_loans
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY, LOAN_TYPE
+    ORDER BY LOAN_CATEGORY, n_loans DESC;
+QUIT;
+
+/* Print all results */
+PROC PRINT DATA=loan_category_status; RUN;
+PROC PRINT DATA=loan_category_summary; RUN;
+PROC PRINT DATA=delinq_status; RUN;
+PROC PRINT DATA=delinq_category_status; RUN;
+PROC PRINT DATA=guarantee_summary; RUN;
+PROC PRINT DATA=loan_type_summary; RUN;
+PROC PRINT DATA=status_summary; RUN;
+PROC PRINT DATA=client_loan_counts; RUN;
+PROC PRINT DATA=category_type_cross; RUN;
+These queries will give you:
+Loan category by status - see which categories are open/closed
+Overall category summary - volumes, client counts, $ amounts
+Delinquency by status - does DFR_PYMT_IND work across all statuses?
+Delinquency detail - broken down by category and status
+Guarantee analysis - how many loans are guaranteed, what's the coverage ratio
+Loan type distribution
+Status summary
+Client-level - how many clients have multiple loans
+Category × Type crosstab - understand the relationship
+Run these and let me know what you see - we can drill deeper based on the results.
