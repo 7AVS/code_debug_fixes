@@ -1,59 +1,92 @@
 CASE 
-    /* AUTO LOANS */
-    WHEN LN_DESC IN ('AUTOPL', 'AUTONP')
-    THEN 'Auto Loan'
+    /* Fixed Rate Products */
+    WHEN LN_DESC IN ('FIXED', 'FR', 'FRINLN', 'FRALTB', 'FRBCB', 'FRCANB', 'FRMANB', 
+                     'FRNBB', 'FRNFLB', 'FRNSB', 'FRPEIB', 'FRSKB')
+    THEN 'Fixed Rate Loan'
     
-    /* PERSONAL LOANS - Unsecured/General Purpose */
-    WHEN LN_DESC IN ('FR', 'FIXED', 'VR', 'V.R.LN', 'INSTAL', 'N.TERM', 'TER_LN', 'TIMRG', 'HIL')
-    THEN 'Personal Loan'
+    /* Variable Rate Products */
+    WHEN LN_DESC IN ('VR', 'V.R.LN', 'VRALTA', 'VRALTB', 'VRBCA', 'VRBCB', 'VRCANA', 'VRCANB',
+                     'VRMANA', 'VRMANB', 'VRNBA', 'VRNBB', 'VRNFLA', 'VRNFLB', 'VRNSA', 'VRNSB',
+                     'VRPEIA', 'VRPEIB', 'VRSKA', 'VRSKB')
+    THEN 'Variable Rate Loan'
     
-    /* INDIRECT LENDING */
-    WHEN LN_DESC IN ('FRINLN')
-    THEN 'Indirect Loan'
-    
-    /* REVOLVING CREDIT */
-    WHEN LN_DESC IN ('RCL', 'RCLSBC', 'RCLSEC')
-    THEN 'Revolving Credit'
-    
-    /* STUDENT LOANS */
-    WHEN LN_DESC IN ('ALTA-A', 'ALTA-B', 'B.C.-A', 'B.C.-B', 'CAN-A', 'CAN-B', 'FEDDIR',
-                     'FRALTB', 'FRBCB', 'FRCANB', 'FRMANB', 'FRNBB', 'FRNFLB', 'FRNSB', 'FRPEIB', 'FRSKB',
+    /* Student Loans (non-rate specific) */
+    WHEN LN_DESC IN ('ALTA-A', 'ALTA-B', 'B.C.-A', 'B.C.-B', 'CAN-A', 'CAN-B', 
                      'MAN-A', 'MAN-B', 'N.S.-A', 'N.S.-B', 'ONT-A', 'ONT-B', 'QUE-A', 'QUE-B',
-                     'VRALTA', 'VRALTB', 'VRBCA', 'VRBCB', 'VRCANA', 'VRCANB', 'VRMANA', 'VRMANB',
-                     'VRNBA', 'VRNBB', 'VRNFLA', 'VRNFLB', 'VRNSA', 'VRNSB', 'VRPEIA', 'VRPEIB', 'VRSKA', 'VRSKB')
+                     'FEDDIR')
     THEN 'Student Loan'
     
-    /* SMALL BUSINESS */
-    WHEN LN_DESC IN ('SBDB', 'SMLBUS', 'GGSBDB')
-    THEN 'Small Business Loan'
+    /* Autoplan */
+    WHEN LN_DESC IN ('AUTOPL', 'AUTONP')
+    THEN 'Autoplan Loan'
     
-    /* COMMERCIAL & INDUSTRIAL */
-    WHEN LN_DESC IN ('DEMAND', 'IBVRDM', 'INDBUS', 'ASSCOR', 'CONSUB', 'CITETC', 'TEN-LN', 'TP/PC', 'OTH-BR')
-    THEN 'Commercial & Industrial'
+    /* Royal Credit Line */
+    WHEN LN_DESC IN ('RCL', 'RCLSBC', 'RCLSEC')
+    THEN 'Royal Credit Line'
     
-    /* AGRICULTURE & RESOURCE */
-    WHEN LN_DESC IN ('ROYFRM', 'ROYFRMD', 'RFRMRG', 'INDFSH', 'FSHDMD', 'GRNOTH', 'GRNWHT')
-    THEN 'Agriculture & Resource'
+    /* RoyFarm */
+    WHEN LN_DESC IN ('ROYFRM', 'ROYFRMD', 'RFRMRG')
+    THEN 'RoyFarm Loan'
     
-    /* TRADE FINANCE */
-    WHEN LN_DESC IN ('TB-DMD', 'TB-TER', 'TBPREC', 'TBTIME', 'B/ACAN')
-    THEN 'Trade Finance'
+    /* Fisherman */
+    WHEN LN_DESC IN ('INDFSH', 'FSHDMD')
+    THEN 'Fisherman Loan'
     
-    /* GOVERNMENT/BOND */
-    WHEN LN_DESC IN ('G/GOTH', 'G/GUAR', 'PRVGOV', 'PSBPSP')
-    THEN 'Government/Bond'
+    /* Grain */
+    WHEN LN_DESC IN ('GRNOTH', 'GRNWHT')
+    THEN 'Grain Loan'
     
-    /* US DOLLAR PRODUCTS */
+    /* Trade Bill */
+    WHEN LN_DESC IN ('TB-DMD', 'TB-TER', 'TBPREC', 'TBTIME')
+    THEN 'Trade Bill Loan'
+    
+    /* US Dollar */
     WHEN LN_DESC IN ('US-B/A', 'US-DMD', 'US-LIB', 'US-TRB', 'USTIME')
     THEN 'US Dollar Loan'
     
-    /* SPECIALTY/POOLED/RECOURSE */
-    WHEN LN_DESC IN ('PL-FP', 'PL_FR', 'PL-LP', 'PL-RR', 'CSBMSP', 'CSBPSP', 'ODWOCB')
-    THEN 'Specialty/Pooled'
+    /* Small Business Development Bond */
+    WHEN LN_DESC IN ('SBDB', 'GGSBDB')
+    THEN 'Small Business Development Bond'
     
-    /* STAFF */
+    /* Government Guaranteed / Small Business */
+    WHEN LN_DESC IN ('G/GOTH', 'G/GUAR', 'SMLBUS')
+    THEN 'Government Guaranteed Loan'
+    
+    /* Savings Bond */
+    WHEN LN_DESC IN ('CSBMSP', 'CSBPSP', 'PSBPSP')
+    THEN 'Savings Bond Loan'
+    
+    /* Installment/Term */
+    WHEN LN_DESC IN ('INSTAL', 'TER_LN', 'N.TERM', 'TIMRG', 'TP/PC', 'TBTIME')
+    THEN 'Installment/Term Loan'
+    
+    /* Demand Loan */
+    WHEN LN_DESC IN ('DEMAND', 'TB-DMD', 'US-DMD', 'FSHDMD', 'ROYFRMD')
+    THEN 'Demand Loan'
+    
+    /* Commercial/Business */
+    WHEN LN_DESC IN ('INDBUS', 'IBVRDM', 'ASSCOR', 'CONSUB', 'CITETC', 'TEN-LN', 'B/ACAN')
+    THEN 'Commercial/Business Loan'
+    
+    /* Home Improvement */
+    WHEN LN_DESC IN ('HIL')
+    THEN 'Home Improvement Loan'
+    
+    /* Provincial Government */
+    WHEN LN_DESC IN ('PRVGOV')
+    THEN 'Provincial Government Loan'
+    
+    /* Pooled/Recourse */
+    WHEN LN_DESC IN ('PL-FP', 'PL_FR', 'PL-LP', 'PL-RR')
+    THEN 'Pooled/Recourse Loan'
+    
+    /* Staff */
     WHEN LN_DESC IN ('STAFF')
     THEN 'Staff Loan'
     
-    ELSE 'Other'
+    /* Other */
+    WHEN LN_DESC IN ('OTH-BR', 'ODWOCB')
+    THEN 'Other/Special Loan'
+    
+    ELSE 'Uncategorized'
 END AS LOAN_CATEGORY, 
