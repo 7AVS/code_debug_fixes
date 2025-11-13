@@ -1,150 +1,77 @@
-Got it. Let me create a set of PROC SQL queries for your EDA on the LN_OPENED table:
-/* 1. Distribution of LOAN_CATEGORY by STATUS */
+You're right! STATUS is a character field, so MAX() would do alphabetical sorting ('8' > '5' > '4' > '3'), not the priority order we want.
+We need explicit priority: 3 (Open) is highest priority → 4 → 5 → 8 (Cancelled) is lowest
+Here's the corrected code:
 PROC SQL;
-    CREATE TABLE loan_category_status AS
+    CREATE TABLE product_summary_unique AS
     SELECT 
-        LOAN_CATEGORY,
-        STATUS,
-        COUNT(*) AS n_loans,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
-        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY, STATUS
-    ORDER BY LOAN_CATEGORY, STATUS;
-QUIT;
-
-/* 2. Overall LOAN_CATEGORY distribution */
-PROC SQL;
-    CREATE TABLE loan_category_summary AS
-    SELECT 
-        LOAN_CATEGORY,
-        COUNT(*) AS n_loans,
-        COUNT(DISTINCT CLNT_NO) AS n_clients,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
-        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2,
-        MEDIAN(AUTHORIZED_AMT) AS median_authorized FORMAT=DOLLAR12.2
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY
-    ORDER BY n_loans DESC;
-QUIT;
-
-/* 3. Delinquency by STATUS - Understanding the relationship */
-PROC SQL;
-    CREATE TABLE delinq_status AS
-    SELECT 
-        STATUS,
-        DFR_PYMT_IND,
-        COUNT(*) AS n_loans,
-        CALCULATED n_loans / SUM(CALCULATED n_loans) AS pct_of_status FORMAT=PERCENT8.2
-    FROM LN_OPENED
-    GROUP BY STATUS, DFR_PYMT_IND
-    ORDER BY STATUS, DFR_PYMT_IND;
-QUIT;
-
-/* 4. Delinquency by LOAN_CATEGORY and STATUS */
-PROC SQL;
-    CREATE TABLE delinq_category_status AS
-    SELECT 
-        LOAN_CATEGORY,
-        STATUS,
-        DFR_PYMT_IND,
-        COUNT(*) AS n_loans
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY, STATUS, DFR_PYMT_IND
-    ORDER BY LOAN_CATEGORY, STATUS, DFR_PYMT_IND;
-QUIT;
-
-/* 5. Guarantee Amount (GUAR_AMT) analysis */
-PROC SQL;
-    CREATE TABLE guarantee_summary AS
-    SELECT 
-        LOAN_CATEGORY,
-        COUNT(*) AS n_loans,
-        SUM(CASE WHEN GUAR_AMT > 0 THEN 1 ELSE 0 END) AS n_guaranteed,
-        CALCULATED n_guaranteed / CALCULATED n_loans AS pct_guaranteed FORMAT=PERCENT8.2,
-        SUM(GUAR_AMT) AS total_guar_amt FORMAT=DOLLAR20.2,
-        MEAN(GUAR_AMT) AS avg_guar_amt FORMAT=DOLLAR12.2,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
-        CALCULATED total_guar_amt / CALCULATED total_authorized AS guar_to_auth_ratio FORMAT=PERCENT8.2
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY
-    ORDER BY n_loans DESC;
-QUIT;
-
-/* 6. LOAN_TYPE distribution */
-PROC SQL;
-    CREATE TABLE loan_type_summary AS
-    SELECT 
-        LOAN_TYPE,
-        COUNT(*) AS n_loans,
-        COUNT(DISTINCT CLNT_NO) AS n_clients,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2
-    FROM LN_OPENED
-    GROUP BY LOAN_TYPE
-    ORDER BY n_loans DESC;
-QUIT;
-
-/* 7. STATUS distribution overall */
-PROC SQL;
-    CREATE TABLE status_summary AS
-    SELECT 
-        STATUS,
-        COUNT(*) AS n_loans,
-        COUNT(DISTINCT CLNT_NO) AS n_clients,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
-        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
-    FROM LN_OPENED
-    GROUP BY STATUS
-    ORDER BY n_loans DESC;
-QUIT;
-
-/* 8. Client-level summary - Multiple loans per client */
-PROC SQL;
-    CREATE TABLE client_loan_counts AS
-    SELECT 
-        COUNT(DISTINCT CLNT_NO) AS total_clients,
-        SUM(CASE WHEN loan_count = 1 THEN 1 ELSE 0 END) AS clients_1_loan,
-        SUM(CASE WHEN loan_count = 2 THEN 1 ELSE 0 END) AS clients_2_loans,
-        SUM(CASE WHEN loan_count >= 3 THEN 1 ELSE 0 END) AS clients_3plus_loans
-    FROM (
+        a.*
+    FROM LN_OPENED a
+    INNER JOIN (
+        /* Assign priority rank, then get the minimum (highest priority) */
         SELECT 
             CLNT_NO,
-            COUNT(*) AS loan_count
+            TACTIC_ID,
+            MIN(
+                CASE STATUS
+                    WHEN '3' THEN 1  /* Open - highest priority */
+                    WHEN '4' THEN 2  /* Delinquent */
+                    WHEN '5' THEN 3  /* Impaired */
+                    WHEN '8' THEN 4  /* Cancelled - lowest priority */
+                    ELSE 99          /* Unknown status goes last */
+                END
+            ) AS priority_rank
         FROM LN_OPENED
-        GROUP BY CLNT_NO
-    );
+        GROUP BY CLNT_NO, TACTIC_ID
+    ) b
+    ON a.CLNT_NO = b.CLNT_NO 
+       AND a.TACTIC_ID = b.TACTIC_ID
+       AND CASE a.STATUS
+               WHEN '3' THEN 1
+               WHEN '4' THEN 2
+               WHEN '5' THEN 3
+               WHEN '8' THEN 4
+               ELSE 99
+           END = b.priority_rank
+    
+    /* If still duplicates (same client, tactic, status), keep earliest product */
+    GROUP BY a.CLNT_NO, a.TACTIC_ID
+    HAVING RETAIL_LN_STRT_DT = MIN(RETAIL_LN_STRT_DT);
 QUIT;
 
-/* 9. Cross-tab: LOAN_CATEGORY by LOAN_TYPE */
+/* Now create the transposed structure */
 PROC SQL;
-    CREATE TABLE category_type_cross AS
+    CREATE TABLE product_summary_transposed AS
     SELECT 
-        LOAN_CATEGORY,
-        LOAN_TYPE,
-        COUNT(*) AS n_loans
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY, LOAN_TYPE
-    ORDER BY LOAN_CATEGORY, n_loans DESC;
+        CLNT_NO,
+        TACTIC_ID,
+        
+        /* Binary Product Category Flags */
+        CASE WHEN LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 0 END AS PRODUCT_STUDENT_LOAN,
+        CASE WHEN LOAN_CATEGORY = 'Revolving Credit' THEN 1 ELSE 0 END AS PRODUCT_REVOLVING_CREDIT,
+        CASE WHEN LOAN_CATEGORY = 'Fixed Rate Loan' THEN 1 ELSE 0 END AS PRODUCT_FIXED_RATE,
+        CASE WHEN LOAN_CATEGORY = 'Variable Rate Loan' THEN 1 ELSE 0 END AS PRODUCT_VARIABLE_RATE,
+        CASE WHEN LOAN_CATEGORY = 'Autoplan Loan' THEN 1 ELSE 0 END AS PRODUCT_AUTO_LOAN,
+        CASE WHEN LOAN_CATEGORY = 'Trade Finance' THEN 1 ELSE 0 END AS PRODUCT_TRADE_FINANCE,
+        CASE WHEN LOAN_CATEGORY = 'Royal Credit Line' THEN 1 ELSE 0 END AS PRODUCT_ROYAL_CREDIT_LINE,
+        CASE WHEN LOAN_CATEGORY NOT IN ('Student Loan', 'Revolving Credit', 'Fixed Rate Loan', 
+                                        'Variable Rate Loan', 'Autoplan Loan', 'Trade Finance',
+                                        'Royal Credit Line') THEN 1 ELSE 0 END AS PRODUCT_OTHER,
+        
+        /* Binary Status Flags */
+        CASE WHEN STATUS = '3' THEN 1 ELSE 0 END AS STATUS_OPEN,
+        CASE WHEN STATUS = '4' THEN 1 ELSE 0 END AS STATUS_DELINQUENT,
+        CASE WHEN STATUS = '5' THEN 1 ELSE 0 END AS STATUS_IMPAIRED,
+        CASE WHEN STATUS = '8' THEN 1 ELSE 0 END AS STATUS_CANCELLED,
+        
+        /* Continuous Fields */
+        AUTHORIZED_AMT AS PRODUCT_AUTHORIZED_AMT FORMAT=DOLLAR20.2,
+        GUAR_AMT AS PRODUCT_GUARANTEE_AMT FORMAT=DOLLAR20.2,
+        RETAIL_LN_STRT_DT AS PRODUCT_OPEN_DATE FORMAT=DATE9.,
+        
+        /* Keep raw fields for validation */
+        LOAN_CATEGORY AS PRODUCT_CATEGORY,
+        STATUS AS PRODUCT_STATUS
+        
+    FROM product_summary_unique;
 QUIT;
-
-/* Print all results */
-PROC PRINT DATA=loan_category_status; RUN;
-PROC PRINT DATA=loan_category_summary; RUN;
-PROC PRINT DATA=delinq_status; RUN;
-PROC PRINT DATA=delinq_category_status; RUN;
-PROC PRINT DATA=guarantee_summary; RUN;
-PROC PRINT DATA=loan_type_summary; RUN;
-PROC PRINT DATA=status_summary; RUN;
-PROC PRINT DATA=client_loan_counts; RUN;
-PROC PRINT DATA=category_type_cross; RUN;
-These queries will give you:
-Loan category by status - see which categories are open/closed
-Overall category summary - volumes, client counts, $ amounts
-Delinquency by status - does DFR_PYMT_IND work across all statuses?
-Delinquency detail - broken down by category and status
-Guarantee analysis - how many loans are guaranteed, what's the coverage ratio
-Loan type distribution
-Status summary
-Client-level - how many clients have multiple loans
-Category × Type crosstab - understand the relationship
-Run these and let me know what you see - we can drill deeper based on the results.
+This prioritizes Status '3' (Open) first, then works down to '8' (Cancelled). Better?
