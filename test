@@ -1,49 +1,42 @@
-You're right! STATUS is a character field, so MAX() would do alphabetical sorting ('8' > '5' > '4' > '3'), not the priority order we want.
-We need explicit priority: 3 (Open) is highest priority → 4 → 5 → 8 (Cancelled) is lowest
-Here's the corrected code:
+Got it! Let me clarify to make sure I understand:
+Deduplication Logic:
+One row per CLNT_NO (forget TACTIC_ID for now)
+Priority: If client has multiple products, keep the Student Loan one
+If they have multiple Student Loans, keep the first opened (earliest date)
+If they have NO Student Loan but have other products, keep the first opened
+Additional Analysis:
+Distribution of CUST_ID by LOAN_CATEGORY
+Here's the code:
+/* Step 1: Deduplicate - prioritize Student Loans */
 PROC SQL;
     CREATE TABLE product_summary_unique AS
     SELECT 
         a.*
     FROM LN_OPENED a
     INNER JOIN (
-        /* Assign priority rank, then get the minimum (highest priority) */
         SELECT 
             CLNT_NO,
-            TACTIC_ID,
-            MIN(
-                CASE STATUS
-                    WHEN '3' THEN 1  /* Open - highest priority */
-                    WHEN '4' THEN 2  /* Delinquent */
-                    WHEN '5' THEN 3  /* Impaired */
-                    WHEN '8' THEN 4  /* Cancelled - lowest priority */
-                    ELSE 99          /* Unknown status goes last */
-                END
-            ) AS priority_rank
+            /* Student Loan gets priority 1, everything else gets priority 2 */
+            MIN(CASE WHEN LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 2 END) AS category_priority,
+            /* Within same priority, get earliest date */
+            MIN(RETAIL_LN_STRT_DT) AS earliest_date
         FROM LN_OPENED
-        GROUP BY CLNT_NO, TACTIC_ID
+        GROUP BY CLNT_NO
     ) b
-    ON a.CLNT_NO = b.CLNT_NO 
-       AND a.TACTIC_ID = b.TACTIC_ID
-       AND CASE a.STATUS
-               WHEN '3' THEN 1
-               WHEN '4' THEN 2
-               WHEN '5' THEN 3
-               WHEN '8' THEN 4
-               ELSE 99
-           END = b.priority_rank
+    ON a.CLNT_NO = b.CLNT_NO
+       AND CASE WHEN a.LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 2 END = b.category_priority
+       AND a.RETAIL_LN_STRT_DT = b.earliest_date
     
-    /* If still duplicates (same client, tactic, status), keep earliest product */
-    GROUP BY a.CLNT_NO, a.TACTIC_ID
-    HAVING RETAIL_LN_STRT_DT = MIN(RETAIL_LN_STRT_DT);
+    /* If still duplicates (same client, same category, same date), keep first by AR_ID */
+    GROUP BY a.CLNT_NO
+    HAVING a.AR_ID = MIN(a.AR_ID);
 QUIT;
 
-/* Now create the transposed structure */
+/* Step 2: Create transposed structure */
 PROC SQL;
     CREATE TABLE product_summary_transposed AS
     SELECT 
         CLNT_NO,
-        TACTIC_ID,
         
         /* Binary Product Category Flags */
         CASE WHEN LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 0 END AS PRODUCT_STUDENT_LOAN,
@@ -68,10 +61,34 @@ PROC SQL;
         GUAR_AMT AS PRODUCT_GUARANTEE_AMT FORMAT=DOLLAR20.2,
         RETAIL_LN_STRT_DT AS PRODUCT_OPEN_DATE FORMAT=DATE9.,
         
-        /* Keep raw fields for validation */
+        /* Keep raw fields */
         LOAN_CATEGORY AS PRODUCT_CATEGORY,
-        STATUS AS PRODUCT_STATUS
+        STATUS AS PRODUCT_STATUS,
+        AR_ID AS PRODUCT_AR_ID,
+        CUST_ID
         
     FROM product_summary_unique;
 QUIT;
-This prioritizes Status '3' (Open) first, then works down to '8' (Cancelled). Better?
+
+/* Step 3: Distribution of CUST_ID by LOAN_CATEGORY */
+PROC SQL;
+    CREATE TABLE cust_id_by_category AS
+    SELECT 
+        LOAN_CATEGORY,
+        CUST_ID,
+        COUNT(*) AS n_clients,
+        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
+        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
+    FROM LN_OPENED
+    GROUP BY LOAN_CATEGORY, CUST_ID
+    ORDER BY LOAN_CATEGORY, n_clients DESC;
+QUIT;
+
+/* Print the distribution */
+PROC PRINT DATA=cust_id_by_category;
+    TITLE "Distribution of CUST_ID by LOAN_CATEGORY";
+RUN;
+Is this what you wanted?
+One row per CLNT_NO with Student Loan priority ✓
+CUST_ID distribution by category ✓
+Later we'll match to TACTIC_ID by date ✓
