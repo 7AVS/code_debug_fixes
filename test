@@ -1,94 +1,22 @@
-Got it! Let me clarify to make sure I understand:
-Deduplication Logic:
-One row per CLNT_NO (forget TACTIC_ID for now)
-Priority: If client has multiple products, keep the Student Loan one
-If they have multiple Student Loans, keep the first opened (earliest date)
-If they have NO Student Loan but have other products, keep the first opened
-Additional Analysis:
-Distribution of CUST_ID by LOAN_CATEGORY
-Here's the code:
-/* Step 1: Deduplicate - prioritize Student Loans */
-PROC SQL;
-    CREATE TABLE product_summary_unique AS
-    SELECT 
-        a.*
-    FROM LN_OPENED a
-    INNER JOIN (
-        SELECT 
-            CLNT_NO,
-            /* Student Loan gets priority 1, everything else gets priority 2 */
-            MIN(CASE WHEN LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 2 END) AS category_priority,
-            /* Within same priority, get earliest date */
-            MIN(RETAIL_LN_STRT_DT) AS earliest_date
-        FROM LN_OPENED
-        GROUP BY CLNT_NO
-    ) b
-    ON a.CLNT_NO = b.CLNT_NO
-       AND CASE WHEN a.LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 2 END = b.category_priority
-       AND a.RETAIL_LN_STRT_DT = b.earliest_date
-    
-    /* If still duplicates (same client, same category, same date), keep first by AR_ID */
-    GROUP BY a.CLNT_NO
-    HAVING a.AR_ID = MIN(a.AR_ID);
-QUIT;
-
-/* Step 2: Create transposed structure */
-PROC SQL;
-    CREATE TABLE product_summary_transposed AS
-    SELECT 
-        CLNT_NO,
-        
-        /* Binary Product Category Flags */
-        CASE WHEN LOAN_CATEGORY = 'Student Loan' THEN 1 ELSE 0 END AS PRODUCT_STUDENT_LOAN,
-        CASE WHEN LOAN_CATEGORY = 'Revolving Credit' THEN 1 ELSE 0 END AS PRODUCT_REVOLVING_CREDIT,
-        CASE WHEN LOAN_CATEGORY = 'Fixed Rate Loan' THEN 1 ELSE 0 END AS PRODUCT_FIXED_RATE,
-        CASE WHEN LOAN_CATEGORY = 'Variable Rate Loan' THEN 1 ELSE 0 END AS PRODUCT_VARIABLE_RATE,
-        CASE WHEN LOAN_CATEGORY = 'Autoplan Loan' THEN 1 ELSE 0 END AS PRODUCT_AUTO_LOAN,
-        CASE WHEN LOAN_CATEGORY = 'Trade Finance' THEN 1 ELSE 0 END AS PRODUCT_TRADE_FINANCE,
-        CASE WHEN LOAN_CATEGORY = 'Royal Credit Line' THEN 1 ELSE 0 END AS PRODUCT_ROYAL_CREDIT_LINE,
-        CASE WHEN LOAN_CATEGORY NOT IN ('Student Loan', 'Revolving Credit', 'Fixed Rate Loan', 
-                                        'Variable Rate Loan', 'Autoplan Loan', 'Trade Finance',
-                                        'Royal Credit Line') THEN 1 ELSE 0 END AS PRODUCT_OTHER,
-        
-        /* Binary Status Flags */
-        CASE WHEN STATUS = '3' THEN 1 ELSE 0 END AS STATUS_OPEN,
-        CASE WHEN STATUS = '4' THEN 1 ELSE 0 END AS STATUS_DELINQUENT,
-        CASE WHEN STATUS = '5' THEN 1 ELSE 0 END AS STATUS_IMPAIRED,
-        CASE WHEN STATUS = '8' THEN 1 ELSE 0 END AS STATUS_CANCELLED,
-        
-        /* Continuous Fields */
-        AUTHORIZED_AMT AS PRODUCT_AUTHORIZED_AMT FORMAT=DOLLAR20.2,
-        GUAR_AMT AS PRODUCT_GUARANTEE_AMT FORMAT=DOLLAR20.2,
-        RETAIL_LN_STRT_DT AS PRODUCT_OPEN_DATE FORMAT=DATE9.,
-        
-        /* Keep raw fields */
-        LOAN_CATEGORY AS PRODUCT_CATEGORY,
-        STATUS AS PRODUCT_STATUS,
-        AR_ID AS PRODUCT_AR_ID,
-        CUST_ID
-        
-    FROM product_summary_unique;
-QUIT;
-
-/* Step 3: Distribution of CUST_ID by LOAN_CATEGORY */
-PROC SQL;
-    CREATE TABLE cust_id_by_category AS
-    SELECT 
-        LOAN_CATEGORY,
-        CUST_ID,
-        COUNT(*) AS n_clients,
-        SUM(AUTHORIZED_AMT) AS total_authorized FORMAT=DOLLAR20.2,
-        MEAN(AUTHORIZED_AMT) AS avg_authorized FORMAT=DOLLAR12.2
-    FROM LN_OPENED
-    GROUP BY LOAN_CATEGORY, CUST_ID
-    ORDER BY LOAN_CATEGORY, n_clients DESC;
-QUIT;
-
-/* Print the distribution */
-PROC PRINT DATA=cust_id_by_category;
-    TITLE "Distribution of CUST_ID by LOAN_CATEGORY";
-RUN;
-Is this what you wanted?
-One row per CLNT_NO with Student Loan priority ✓
-CUST_ID distribution by category ✓
-Later we'll match to TACTIC_ID by date ✓
+Full Presentation - Final Version
+Slide 1 (Page 14) - Campaign Overview (45 seconds):
+"Good [morning/afternoon], everyone. Today I'm presenting results from our 2025 Student RCL targeted campaign, which ran from July through November 3rd as part of our annual acquisition strategy.
+Here's the strategic context: these 276,000 students are already seeing our mass marketing everywhere - social media, branch signage, standard digital campaigns. Our challenge was to prove that targeted, personalized digital engagement could drive incremental lift on top of that baseline exposure.
+We focused on three high-value segments: primary Student banking relationships, undergraduate and professional graduate students, and priority clients approaching graduation. Deployment ran through email, online banking, and mobile channels with 30-day re-engagement sequences.
+Three strategic changes from 2024: we refined our audience from 396K to 276K for precision, expanded our control group from 5% to 20% for statistical rigor, and increased our incentive to $575 to ensure competitive differentiation. These decisions were crucial for what I'll show you next."
+Transition: "Let's look at how these changes impacted performance..."
+Slide 2 (Page 15) - Performance & Statistical Significance (50 seconds):
+"So here's where things get interesting. Last year we saw 0.05% lift, but with only 5% control, we couldn't achieve statistical significance. We had results but couldn't trust them.
+This year, we made the strategic decision to expand control to 20% and refine our targeting to 276K. The result? We hit 0.07% lift with full statistical significance at 95% confidence. Finally, we have the measurement precision we've been working toward.
+The performance curves tell the story - look how the 2025 wave immediately separates from control and maintains that gap throughout. The Initial Wave delivered 0.07%, First Contact held strong at the same level, and even our Reminder pushed an incremental 0.01%.
+What this means strategically is that we've established our measurement baseline. Every experiment we run going forward - whether it's channel optimization, new creative, different timing - we can measure with confidence."
+Transition: "Now, with that foundation in place, let's look at what we learned about creative and segments..."
+Slide 3 (Page 16) - Creative Test & Segment Insights (50 seconds):
+"Our mobile creative test showed both variants outperforming control - Champion at 0.07%, Challenger at 0.06%. The 0.01% difference between them isn't statistically significant, so we don't have a clear winner there.
+But the graduation year segmentation revealed something fascinating. Future Grads make up 49% of our audience - almost half - and they're showing the highest response rate at 0.23%. Now, Recent Grads have the highest lift at 0.14%, but they're only 10% of our population. Current Year students are solid at 0.12% lift with 28% share.
+When you look at that pie chart, Future Grads dominate. Combining their scale with those response rates, they're clearly where our biggest opportunity lies. That's actionable intelligence we can use immediately."
+Closing (25 seconds):
+"To summarize our key findings: We've achieved statistical significance, establishing the measurement baseline needed for all future experiments. This is foundational for our testing program going forward.
+The A/B creative test results were inconclusive given the current settings. The minimal difference between variants indicates we need to explore different creative strategies in our next iteration - more differentiation is required to identify optimal messaging.
+Most importantly, our graduation year analysis revealed that Future Grads represent 49% of our audience with the highest response rates. This combination of scale and engagement makes them our clear priority.
+We've validated that targeted campaigns drive incremental lift, we have the measurement framework to optimize them, and we know exactly where to focus our efforts."
