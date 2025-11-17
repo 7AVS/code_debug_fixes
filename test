@@ -4,7 +4,7 @@
 /* PREREQUISITE: Run new_vintage_complete.sas first                        */
 /* ========================================================================= */
 
-/* STEP 1: GET EMAIL DATA WITH EVENT DATES */
+/* STEP 1: GET EMAIL DATA WITH BOTH FLAGS AND EVENT DATES */
 proc sql;
     connectsql;
     CREATE TABLE EMAIL_WITH_DATES AS
@@ -12,15 +12,26 @@ proc sql;
         SELECT DISTINCT
             FEEDBACK_MASTER.TREATMENT_ID,
             FEEDBACK_MASTER.CLNT_NO,
+            
+            /* Binary flags */
+            Max(CASE WHEN disposition_cd=1 THEN 1 ELSE 0 END) AS email_sent,
+            Max(CASE WHEN disposition_cd=2 THEN 1 ELSE 0 END) AS email_opened,
+            Max(CASE WHEN disposition_cd=3 THEN 1 ELSE 0 END) AS email_clicked,
+            Max(CASE WHEN disposition_cd=4 THEN 1 ELSE 0 END) AS email_unsubscribed,
+            Max(CASE WHEN disposition_cd=5 THEN 1 ELSE 0 END) AS email_hardbounce,
+            
+            /* Event dates */
+            MAX(CASE WHEN disposition_cd=1 THEN CAST(disposition_dt_tm AS DATE) END) AS email_sent_date,
             MAX(CASE WHEN disposition_cd=2 THEN CAST(disposition_dt_tm AS DATE) END) AS email_opened_date,
             MAX(CASE WHEN disposition_cd=3 THEN CAST(disposition_dt_tm AS DATE) END) AS email_clicked_date,
-            MAX(CASE WHEN disposition_cd=4 THEN CAST(disposition_dt_tm AS DATE) END) AS email_unsubscribed_date
+            MAX(CASE WHEN disposition_cd=4 THEN CAST(disposition_dt_tm AS DATE) END) AS email_unsubscribed_date,
+            MAX(CASE WHEN disposition_cd=5 THEN CAST(disposition_dt_tm AS DATE) END) AS email_hardbounce_date
+            
         FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
         INNER JOIN DTZV01.VENDOR_FEEDBACK_EVENT FEEDBACK_EVENT
             ON FEEDBACK_MASTER.consumer_id_hashed = FEEDBACK_EVENT.consumer_id_hashed
             AND FEEDBACK_MASTER.TREATMENT_ID = FEEDBACK_EVENT.TREATMENT_ID
         WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '20251968LC', '2025227SLC')
-          AND disposition_cd IN (2,3,4)
         GROUP BY 1,2
     );
 QUIT;
@@ -33,9 +44,21 @@ proc sql;
         t.TACTIC_ID,
         t.TST_GRP_CD,
         t.TREATMT_STRT_DT as campaign_start,
+        
+        /* Binary flags */
+        coalesce(e.email_sent, 0) as email_sent,
+        coalesce(e.email_opened, 0) as email_opened,
+        coalesce(e.email_clicked, 0) as email_clicked,
+        coalesce(e.email_unsubscribed, 0) as email_unsubscribed,
+        coalesce(e.email_hardbounce, 0) as email_hardbounce,
+        
+        /* Event dates */
+        e.email_sent_date,
         e.email_opened_date,
         e.email_clicked_date,
-        e.email_unsubscribed_date
+        e.email_unsubscribed_date,
+        e.email_hardbounce_date
+        
     from tactic_details as t
     left join EMAIL_WITH_DATES as e
         on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO;
@@ -45,8 +68,17 @@ quit;
 data all_email_events;
     set email_events_base;
     
+    /* Email Sent Events - use flag AND date for validation */
+    if email_sent = 1 and not missing(email_sent_date) then do;
+        days_to_event = email_sent_date - campaign_start;
+        if 0 <= days_to_event <= 120 then do;
+            metric = 'Email_Sent';
+            output;
+        end;
+    end;
+    
     /* Email Opened Events */
-    if not missing(email_opened_date) then do;
+    if email_opened = 1 and not missing(email_opened_date) then do;
         days_to_event = email_opened_date - campaign_start;
         if 0 <= days_to_event <= 120 then do;
             metric = 'Email_Opened';
@@ -55,7 +87,7 @@ data all_email_events;
     end;
     
     /* Email Clicked Events */
-    if not missing(email_clicked_date) then do;
+    if email_clicked = 1 and not missing(email_clicked_date) then do;
         days_to_event = email_clicked_date - campaign_start;
         if 0 <= days_to_event <= 120 then do;
             metric = 'Email_Clicked';
@@ -64,10 +96,19 @@ data all_email_events;
     end;
     
     /* Email Unsubscribed Events */
-    if not missing(email_unsubscribed_date) then do;
+    if email_unsubscribed = 1 and not missing(email_unsubscribed_date) then do;
         days_to_event = email_unsubscribed_date - campaign_start;
         if 0 <= days_to_event <= 120 then do;
             metric = 'Email_Unsubscribed';
+            output;
+        end;
+    end;
+    
+    /* Email Hard Bounce Events */
+    if email_hardbounce = 1 and not missing(email_hardbounce_date) then do;
+        days_to_event = email_hardbounce_date - campaign_start;
+        if 0 <= days_to_event <= 120 then do;
+            metric = 'Email_Hardbounce';
             output;
         end;
     end;
@@ -109,7 +150,7 @@ quit;
 data email_vintage_raw;
     /* First pass: calculate cumulatives */
     do cohort = '2024196SLC', '20251968LC', '2025227SLC';
-        do metric = 'Email_Opened', 'Email_Clicked', 'Email_Unsubscribed';
+        do metric = 'Email_Sent', 'Email_Opened', 'Email_Clicked', 'Email_Unsubscribed', 'Email_Hardbounce';
             do test_group = 'TG1', 'TG4', 'TG7', 'Action_Combined';
                 cumulative = 0;
                 do period = 0 to 120;
@@ -172,7 +213,7 @@ quit;
 /* STEP 5: OUTPUT AND VERIFICATION */
 proc print data=email_vintage_curves_final(obs=30);
     title "Email Vintage Curves - Sample Output";
-    title2 "Metrics: Email_Opened, Email_Clicked, Email_Unsubscribed";
+    title2 "Metrics: Email_Sent, Email_Opened, Email_Clicked, Email_Unsubscribed, Email_Hardbounce";
 run;
 
 proc sql;
