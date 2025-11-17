@@ -1,22 +1,196 @@
-Full Presentation - Final Version
-Slide 1 (Page 14) - Campaign Overview (45 seconds):
-"Good [morning/afternoon], everyone. Today I'm presenting results from our 2025 Student RCL targeted campaign, which ran from July through November 3rd as part of our annual acquisition strategy.
-Here's the strategic context: these 276,000 students are already seeing our mass marketing everywhere - social media, branch signage, standard digital campaigns. Our challenge was to prove that targeted, personalized digital engagement could drive incremental lift on top of that baseline exposure.
-We focused on three high-value segments: primary Student banking relationships, undergraduate and professional graduate students, and priority clients approaching graduation. Deployment ran through email, online banking, and mobile channels with 30-day re-engagement sequences.
-Three strategic changes from 2024: we refined our audience from 396K to 276K for precision, expanded our control group from 5% to 20% for statistical rigor, and increased our incentive to $575 to ensure competitive differentiation. These decisions were crucial for what I'll show you next."
-Transition: "Let's look at how these changes impacted performance..."
-Slide 2 (Page 15) - Performance & Statistical Significance (50 seconds):
-"So here's where things get interesting. Last year we saw 0.05% lift, but with only 5% control, we couldn't achieve statistical significance. We had results but couldn't trust them.
-This year, we made the strategic decision to expand control to 20% and refine our targeting to 276K. The result? We hit 0.07% lift with full statistical significance at 95% confidence. Finally, we have the measurement precision we've been working toward.
-The performance curves tell the story - look how the 2025 wave immediately separates from control and maintains that gap throughout. The Initial Wave delivered 0.07%, First Contact held strong at the same level, and even our Reminder pushed an incremental 0.01%.
-What this means strategically is that we've established our measurement baseline. Every experiment we run going forward - whether it's channel optimization, new creative, different timing - we can measure with confidence."
-Transition: "Now, with that foundation in place, let's look at what we learned about creative and segments..."
-Slide 3 (Page 16) - Creative Test & Segment Insights (50 seconds):
-"Our mobile creative test showed both variants outperforming control - Champion at 0.07%, Challenger at 0.06%. The 0.01% difference between them isn't statistically significant, so we don't have a clear winner there.
-But the graduation year segmentation revealed something fascinating. Future Grads make up 49% of our audience - almost half - and they're showing the highest response rate at 0.23%. Now, Recent Grads have the highest lift at 0.14%, but they're only 10% of our population. Current Year students are solid at 0.12% lift with 28% share.
-When you look at that pie chart, Future Grads dominate. Combining their scale with those response rates, they're clearly where our biggest opportunity lies. That's actionable intelligence we can use immediately."
-Closing (25 seconds):
-"To summarize our key findings: We've achieved statistical significance, establishing the measurement baseline needed for all future experiments. This is foundational for our testing program going forward.
-The A/B creative test results were inconclusive given the current settings. The minimal difference between variants indicates we need to explore different creative strategies in our next iteration - more differentiation is required to identify optimal messaging.
-Most importantly, our graduation year analysis revealed that Future Grads represent 49% of our audience with the highest response rates. This combination of scale and engagement makes them our clear priority.
-We've validated that targeted campaigns drive incremental lift, we have the measurement framework to optimize them, and we know exactly where to focus our efforts."
+/* ========================================================================= */
+/* EMAIL VINTAGE CURVES - STREAMLINED VERSION                              */
+/* Purpose: Create cumulative email performance vintage curves             */
+/* PREREQUISITE: Run new_vintage_complete.sas first                        */
+/* ========================================================================= */
+
+/* STEP 1: GET EMAIL DATA WITH EVENT DATES */
+proc sql;
+    connectsql;
+    CREATE TABLE EMAIL_WITH_DATES AS
+    SELECT * FROM CONNECTION TO TERADATA(
+        SELECT DISTINCT
+            FEEDBACK_MASTER.TREATMENT_ID,
+            FEEDBACK_MASTER.CLNT_NO,
+            MAX(CASE WHEN disposition_cd=2 THEN CAST(disposition_dt_tm AS DATE) END) AS email_opened_date,
+            MAX(CASE WHEN disposition_cd=3 THEN CAST(disposition_dt_tm AS DATE) END) AS email_clicked_date,
+            MAX(CASE WHEN disposition_cd=4 THEN CAST(disposition_dt_tm AS DATE) END) AS email_unsubscribed_date
+        FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
+        INNER JOIN DTZV01.VENDOR_FEEDBACK_EVENT FEEDBACK_EVENT
+            ON FEEDBACK_MASTER.consumer_id_hashed = FEEDBACK_EVENT.consumer_id_hashed
+            AND FEEDBACK_MASTER.TREATMENT_ID = FEEDBACK_EVENT.TREATMENT_ID
+        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '20251968LC', '2025227SLC')
+          AND disposition_cd IN (2,3,4)
+        GROUP BY 1,2
+    );
+QUIT;
+
+/* STEP 2: CREATE EMAIL EVENTS WITH CAMPAIGN CONTEXT */
+proc sql;
+    create table email_events_base as
+    select 
+        t.CLNT_NO,
+        t.TACTIC_ID,
+        t.TST_GRP_CD,
+        t.TREATMT_STRT_DT as campaign_start,
+        e.email_opened_date,
+        e.email_clicked_date,
+        e.email_unsubscribed_date
+    from tactic_details as t
+    left join EMAIL_WITH_DATES as e
+        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO;
+quit;
+
+/* STEP 3: CONVERT TO DAILY EVENTS FORMAT */
+data all_email_events;
+    set email_events_base;
+    
+    /* Email Opened Events */
+    if not missing(email_opened_date) then do;
+        days_to_event = email_opened_date - campaign_start;
+        if 0 <= days_to_event <= 120 then do;
+            metric = 'Email_Opened';
+            output;
+        end;
+    end;
+    
+    /* Email Clicked Events */
+    if not missing(email_clicked_date) then do;
+        days_to_event = email_clicked_date - campaign_start;
+        if 0 <= days_to_event <= 120 then do;
+            metric = 'Email_Clicked';
+            output;
+        end;
+    end;
+    
+    /* Email Unsubscribed Events */
+    if not missing(email_unsubscribed_date) then do;
+        days_to_event = email_unsubscribed_date - campaign_start;
+        if 0 <= days_to_event <= 120 then do;
+            metric = 'Email_Unsubscribed';
+            output;
+        end;
+    end;
+    
+    keep clnt_no tactic_id tst_grp_cd days_to_event metric;
+run;
+
+/* Add Action_Combined for 2025196SLC */
+data all_email_events_final;
+    set all_email_events;
+    output;
+    if tactic_id = '2025196SLC' and tst_grp_cd in ('TG1', 'TG4') then do;
+        tst_grp_cd = 'Action_Combined';
+        output;
+    end;
+run;
+
+/* STEP 4: CREATE CUMULATIVE VINTAGE CURVES */
+proc sql;
+    /* Get base counts */
+    create table base_counts as
+    select tactic_id, tst_grp_cd, count(distinct clnt_no) as base_value
+    from tactic_details group by 1,2
+    union all
+    select tactic_id, 'Action_Combined', sum(case when tst_grp_cd in ('TG1','TG4') then 1 else 0 end)
+    from (select tactic_id, tst_grp_cd, count(distinct clnt_no) as cnt from tactic_details group by 1,2)
+    group by tactic_id;
+    
+    /* Pre-aggregate daily events */
+    create table daily_counts as
+    select 
+        tactic_id as cohort, metric, tst_grp_cd as test_group, days_to_event as period,
+        count(distinct clnt_no) as daily_count
+    from all_email_events_final
+    group by 1,2,3,4;
+quit;
+
+/* Calculate cumulative totals and fill periods */
+data email_vintage_raw;
+    /* First pass: calculate cumulatives */
+    do cohort = '2024196SLC', '20251968LC', '2025227SLC';
+        do metric = 'Email_Opened', 'Email_Clicked', 'Email_Unsubscribed';
+            do test_group = 'TG1', 'TG4', 'TG7', 'Action_Combined';
+                cumulative = 0;
+                do period = 0 to 120;
+                    daily_count = 0;
+                    /* Get daily count for this combination */
+                    set daily_counts(where=(
+                        cohort=cohort and metric=metric and 
+                        test_group=test_group and period=period)) point=nobs nobs=total_obs;
+                    if nobs > 0 then daily_count = daily_count;
+                    cumulative + daily_count;
+                    metric_value = cumulative;
+                    output;
+                    if _error_ then call symputx('_error_', 0);
+                end;
+            end;
+        end;
+    end;
+    stop;
+    keep cohort metric test_group period metric_value;
+run;
+
+/* Add base values and clean labels */
+proc sql;
+    create table email_vintage_curves_final as
+    select 
+        case v.cohort
+            when '2024196SLC' then '2024'
+            when '20251968LC' then '2025_First' 
+            when '2025227SLC' then '2025_Reminder'
+            else v.cohort
+        end as cohort,
+        v.metric,
+        case 
+            when v.cohort = '2025196SLC' then
+                case v.test_group
+                    when 'TG1' then 'Action A'
+                    when 'TG4' then 'Action B'
+                    when 'Action_Combined' then 'Action Combined'
+                    when 'TG7' then 'Control'
+                    else v.test_group
+                end
+            else 
+                case v.test_group
+                    when 'TG7' then 'Control'
+                    when 'TG1' then 'Action'
+                    when 'TG4' then 'Action'
+                    else v.test_group
+                end
+        end as test_group,
+        v.period,
+        coalesce(v.metric_value, 0) as metric_value,
+        b.base_value
+    from email_vintage_raw as v
+    left join base_counts as b
+        on v.cohort = b.tactic_id and v.test_group = b.tst_grp_cd
+    where b.base_value > 0  /* Only include valid test groups */
+    order by 1,2,3,4;
+quit;
+
+/* STEP 5: OUTPUT AND VERIFICATION */
+proc print data=email_vintage_curves_final(obs=30);
+    title "Email Vintage Curves - Sample Output";
+    title2 "Metrics: Email_Opened, Email_Clicked, Email_Unsubscribed";
+run;
+
+proc sql;
+    title "Email Vintage Curves - Day 120 Summary";
+    select cohort, metric, test_group,
+           max(case when period=120 then metric_value end) as day_120_value,
+           max(base_value) as base_clients,
+           calculated day_120_value / calculated base_clients as rate format=percent8.2
+    from email_vintage_curves_final
+    where period = 120
+    group by 1,2,3
+    order by 1,2,3;
+quit;
+
+/* Cleanup */
+proc datasets library=work nolist;
+    delete EMAIL_WITH_DATES email_events_base all_email_events all_email_events_final 
+           base_counts daily_counts email_vintage_raw;
+quit;
+
+%put EMAIL VINTAGE CURVES COMPLETE - email_vintage_curves_final created;
