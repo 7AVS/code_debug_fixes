@@ -1,9 +1,9 @@
 /* ========================================================================= */
-/* STUDENT RCL VINTAGE CURVES - V2 CLEAN & OPTIMIZED                      */
-/* Purpose: Streamlined vintage curve analysis - reduced and organized      */
+/* STUDENT RCL VINTAGE CURVES - V2 EXACT COPY WITH CONSOLIDATION           */
+/* Purpose: EXACT same logic as original, just reduce bloat                 */
 /* ========================================================================= */
 
-/* CHUNK 1: TACTIC DETAILS FOUNDATION - SINGLE OPTIMIZED QUERY */
+/* CHUNK 1: EXACT TACTIC DETAILS COPY - Same hardcoded parsing, fixed tactic IDs */
 proc sql;
     %connectsql;
     create table tactic_details as
@@ -19,111 +19,225 @@ proc sql;
             PER.EMPL_STS_CD,
             PER.OCCPT_CD,
             
-            /* STUDENT SEGMENT FLAGS - Convert Y/N to 1/0 */
-            CASE 
-                WHEN TACTIC.tactic_id = '2024196SLC' AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1)) = 'Y'
-                THEN 1
-                WHEN TACTIC.tactic_id = '2025196SLC' AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1)) = 'Y'
-                THEN 1
-                ELSE 0
+            /* Parse student segment flags from TACTIC_DECISN_VRB_INFO - EXACT ORIGINAL LOGIC */
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1))
+                ELSE NULL
             END AS STUDENT_NG_IND,
             
-            CASE 
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1)) = 'Y'
-                THEN 1 
-                ELSE 0
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1))
+                ELSE NULL
             END AS STUDENT_SB_IND,
             
-            CASE 
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1)) = 'Y'
-                THEN 1 
-                ELSE 0
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1))
+                ELSE NULL
             END AS STUDENT_IR_IND,
             
-            /* GRADUATION DATE */
             CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC')
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
                 AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) = 'N/A'
                 THEN 'N/A'
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC')
-                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) <> 'N/A'
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) NE 'N/A'
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) NE 'N/A'
                 THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10))
                 ELSE NULL
             END AS GRAD_DATE,
             
-            /* COMMUNICATION CHANNEL FLAGS - Convert Y/N to 1/0 */
-            CASE 
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1)) = 'Y'
-                THEN 1 
-                ELSE 0
+            /* Communication channel indicators - EXACT ORIGINAL LOGIC */
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1))
+                ELSE NULL
             END AS EM_IND,
             
-            CASE 
-                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
-                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1)) = 'Y'
-                THEN 1 
-                ELSE 0
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1))
+                WHEN TACTIC.tactic_id IN ('2025196SLC')
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1))
+                ELSE NULL
             END AS OLB_IND,
             
-            /* CHANNEL ASSIGNMENT - Consolidated logic */
+            /* Full channel assignment - EXACT ORIGINAL LOGIC */
             CASE
-                /* 2024 Campaign Logic */
                 WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2022 AND RPT_GRP_CD IN ('PSLCRG01', 'PSLCRG02') THEN 'EM'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG02' THEN 'EM'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG01' THEN 'IM_MB'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG03' THEN 'IM_MB_EM'
-                
-                /* 2025 First Campaign Logic */
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG02') THEN 'EM'
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG01') THEN 'IM_MB'
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG03') THEN 'IM_MB_EM'
                 WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC001A' THEN 'IM_MB'
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC002A' THEN 'EM'
                 WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC003A' THEN 'IM_EM_MB'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC005A' THEN 'IM_EM_MB'
                 WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = 'PSLCNMAA' THEN 'CONTROL'
-                
-                /* 2025 Reminder Logic */
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '1SLC004A' THEN 'IM_MB'
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC005A' THEN 'IM_EM_MB'
                 WHEN TACTIC.tactic_id = '2025227SLC' THEN 'EM'
-                
                 ELSE 'OTHER'
             END AS FULL_CHANNEL
             
         FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
         LEFT JOIN (
-            SELECT distinct CLNT_NO, SNAP_DT, OCCPT_CD, empl_sts_CD
+            SELECT distinct
+                CLNT_NO,
+                SNAP_DT,
+                OCCPT_CD,
+                OCCPT_CD_DESC_EN,
+                empl_sts_CD
             FROM DDWV01.PERS_dly
             where SNAP_DT = '2025-10-31'
         ) as PER
-            on tactic.CLNT_NO = PER.CLNT_NO
+        on tactic.CLNT_NO = PER.CLNT_NO
+        AND PER.SNAP_DT = '2025-10-31'
         WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
         order by TACTIC.CLNT_NO
     );
 quit;
 
-/* VALIDATION SUMMARY */
+/* Simple validation - same as original */
 proc sql;
-    title "CHUNK 1 - Tactic Details Foundation Summary";
+    title "Tactic Details Validation";
+    select 
+        TACTIC_ID,
+        TST_GRP_CD,
+        count(distinct CLNT_NO) as client_count
+    from tactic_details
+    group by TACTIC_ID, TST_GRP_CD
+    order by TACTIC_ID, TST_GRP_CD;
+quit;
+
+%put CHUNK 1 COMPLETE - EXACT TACTIC DETAILS WITH CORRECTED TACTIC IDS;
+
+/* ========================================================================= */
+/* CHUNK 2: APPOINTMENTS - CLEAN & REDUCED VERSION                         */
+/* Reduced from 5 separate queries to 1 CTE query                          */
+/* ========================================================================= */
+
+proc sql;
+    %connectsql;
+    create table appt_client_level as
+    select * from connection to teradata (
+        WITH appt_raw as (
+            SELECT DISTINCT
+                camp.clnt_no,
+                camp.tactic_id,
+                camp.tst_grp_cd,
+                camp.rpt_grp_cd,
+                camp.TREATMT_MN,
+                camp.treatmt_strt_dt,
+                camp.treatmt_end_dt,
+                evt.strt_dt,
+                evt.evnt_dt,
+                evt.cntct_mthd_typ,
+                evt.evnt_sts_cd,
+                evt.evnt_shrt_note_txt,
+                rslt.sub_rslt_typ_cd,
+                
+                /* Apply appointment logic directly in query */
+                case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt
+                    then 1 else 0 end as APPT_BOOKED,
+                case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt
+                    and rslt.sub_rslt_typ_cd >= 1
+                    then 1 else 0 end as APPT_KEPT
+                    
+            FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS camp
+            INNER JOIN DG6V01.intcn_cntct_evnt_dly_d AS evt
+                ON evt.clnt_no = camp.clnt_no
+                AND evt.sys_src_id = 551
+                AND evt.cntct_evnt_typ = 1
+                AND evt.cntct_mthd_typ IN (1,2,9)
+                AND (
+                    evt.strt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
+                    OR evt.evnt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
+                )
+            LEFT JOIN DG6V01.intcn_cntct_evnt_rslt_dly AS rslt
+                ON rslt.css_event_id = evt.css_event_id
+                AND rslt.sys_src_id = evt.sys_src_id
+                AND rslt.clnt_no = evt.clnt_no
+                AND rslt.snap_dt = date '2025-11-06'
+            WHERE camp.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
+        ),
+        appt_with_appointments as (
+            SELECT
+                clnt_no,
+                tactic_id,
+                tst_grp_cd,
+                rpt_grp_cd,
+                TREATMT_MN,
+                treatmt_strt_dt as campaign_start,
+                treatmt_end_dt as campaign_end,
+                
+                /* Aggregate appointment metrics */
+                max(APPT_BOOKED) as APPT_BOOKED,
+                max(APPT_KEPT) as APPT_KEPT,
+                sum(APPT_BOOKED) as num_appts_booked,
+                sum(APPT_KEPT) as num_appts_kept,
+                min(strt_dt) as first_booked_date,
+                max(strt_dt) as last_booked_date,
+                min(case when APPT_KEPT=1 then evnt_dt else null end) as first_kept_date,
+                max(case when APPT_KEPT=1 then evnt_dt else null end) as last_kept_date
+                
+            FROM appt_raw
+            GROUP BY clnt_no, tactic_id, tst_grp_cd, rpt_grp_cd, TREATMT_MN, treatmt_strt_dt, treatmt_end_dt
+        )
+        
+        /* Join back to full campaign base - includes ALL clients */
+        SELECT
+            base.clnt_no,
+            base.tactic_id,
+            base.tst_grp_cd,
+            base.rpt_grp_cd,
+            base.TREATMT_MN,
+            base.TREATMT_STRT_DT as campaign_start,
+            base.TREATMT_END_DT as campaign_end,
+            
+            /* If no appointments, set to 0 */
+            coalesce(appt.APPT_BOOKED, 0) as APPT_BOOKED,
+            coalesce(appt.APPT_KEPT, 0) as APPT_KEPT,
+            coalesce(appt.num_appts_booked, 0) as num_appts_booked,
+            coalesce(appt.num_appts_kept, 0) as num_appts_kept,
+            appt.first_booked_date,
+            appt.last_booked_date,
+            appt.first_kept_date,
+            appt.last_kept_date
+            
+        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS base
+        LEFT JOIN appt_with_appointments AS appt
+            ON appt.clnt_no = base.clnt_no
+            AND appt.tactic_id = base.tactic_id
+        WHERE base.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
+        ORDER BY base.clnt_no, base.tactic_id
+    );
+quit;
+
+/* Validation */
+proc sql;
+    title "CHUNK 2 - Appointment Summary";
     select 
         tactic_id,
         tst_grp_cd,
-        count(*) as total_clients,
-        sum(STUDENT_NG_IND) as student_ng_count,
-        sum(STUDENT_SB_IND) as student_sb_count, 
-        sum(STUDENT_IR_IND) as student_ir_count,
-        sum(EM_IND) as email_enabled,
-        sum(OLB_IND) as olb_enabled
-    from tactic_details
+        count(distinct clnt_no) as total_clients,
+        sum(APPT_BOOKED) as clients_booked,
+        sum(APPT_KEPT) as clients_kept,
+        sum(num_appts_booked) as total_appts_booked,
+        sum(num_appts_kept) as total_appts_kept
+    from appt_client_level
     group by tactic_id, tst_grp_cd
     order by tactic_id, tst_grp_cd;
 quit;
 
-%put =======================================================================;
-%put CHUNK 1 COMPLETE - CLEAN TACTIC DETAILS FOUNDATION;
-%put =======================================================================;
-%put - Single optimized query (vs 4+ steps in bloated version);
-%put - Fixed Y/N to 1/0 conversion for student segments;  
-%put - Same business logic, cleaner implementation;
-%put - Ready for Chunk 2: Email integration;
-%put =======================================================================;
+%put CHUNK 2 COMPLETE - APPOINTMENTS REDUCED FROM 5 QUERIES TO 1;
