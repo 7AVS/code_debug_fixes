@@ -6,7 +6,7 @@
 
 /* STEP 1: GET EMAIL DATA WITH BOTH FLAGS AND EVENT DATES */
 proc sql;
-    connectsql;
+    %connectsql;
     CREATE TABLE EMAIL_WITH_DATES AS
     SELECT * FROM CONNECTION TO TERADATA(
         SELECT DISTINCT
@@ -120,7 +120,7 @@ run;
 data all_email_events_final;
     set all_email_events;
     output;
-    if tactic_id = '2025196SLC' and tst_grp_cd in ('TG1', 'TG4') then do;
+    if tactic_id = '20251968LC' and tst_grp_cd in ('TG1', 'TG4') then do;
         tst_grp_cd = 'Action_Combined';
         output;
     end;
@@ -224,7 +224,7 @@ proc sql;
         end as cohort,
         v.metric,
         case 
-            when v.cohort = '2025196SLC' then
+            when v.cohort = '20251968LC' then
                 case v.test_group
                     when 'TG1' then 'Action A'
                     when 'TG4' then 'Action B'
