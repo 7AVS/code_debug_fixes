@@ -146,30 +146,70 @@ proc sql;
     group by 1,2,3,4;
 quit;
 
-/* Calculate cumulative totals and fill periods */
-data email_vintage_raw;
-    /* First pass: calculate cumulatives */
-    do cohort = '2024196SLC', '20251968LC', '2025227SLC';
-        do metric = 'Email_Sent', 'Email_Opened', 'Email_Clicked', 'Email_Unsubscribed', 'Email_Hardbounce';
-            do test_group = 'TG1', 'TG4', 'TG7', 'Action_Combined';
-                cumulative = 0;
-                do period = 0 to 120;
-                    daily_count = 0;
-                    /* Get daily count for this combination */
-                    set daily_counts(where=(
-                        cohort=cohort and metric=metric and 
-                        test_group=test_group and period=period)) point=nobs nobs=total_obs;
-                    if nobs > 0 then daily_count = daily_count;
-                    cumulative + daily_count;
-                    metric_value = cumulative;
-                    output;
-                    if _error_ then call symputx('_error_', 0);
-                end;
-            end;
-        end;
-    end;
-    stop;
+/* Calculate cumulative totals using DATA step with RETAIN */
+data email_vintage_temp;
+    set daily_counts;
+    by cohort metric test_group;
+    
+    /* Initialize cumulative counter at start of each group */
+    retain cumulative_count;
+    if first.test_group then cumulative_count = 0;
+    
+    /* Add daily count to running total */
+    cumulative_count + daily_count;
+    metric_value = cumulative_count;
+    
     keep cohort metric test_group period metric_value;
+run;
+
+/* Fill in missing periods (0-120) */
+data periods;
+    do period = 0 to 120;
+        output;
+    end;
+run;
+
+proc sql;
+    create table period_grid as
+    select distinct
+        v.cohort,
+        v.metric,
+        v.test_group,
+        p.period
+    from email_vintage_temp as v
+    cross join periods as p;
+quit;
+
+/* Merge grid with cumulative data and forward-fill */
+proc sql;
+    create table email_vintage_filled as
+    select
+        g.cohort,
+        g.metric,
+        g.test_group,
+        g.period,
+        v.metric_value
+    from period_grid as g
+    left join email_vintage_temp as v
+        on v.cohort = g.cohort
+        and v.metric = g.metric
+        and v.test_group = g.test_group
+        and v.period = g.period
+    order by g.cohort, g.metric, g.test_group, g.period;
+quit;
+
+/* Forward-fill missing cumulative values */
+data email_vintage_complete;
+    set email_vintage_filled;
+    by cohort metric test_group;
+    
+    /* Carry forward last known value */
+    retain last_value;
+    if first.test_group then last_value = 0;
+    if not missing(metric_value) then last_value = metric_value;
+    else metric_value = last_value;
+    
+    drop last_value;
 run;
 
 /* Add base values and clean labels */
@@ -203,7 +243,7 @@ proc sql;
         v.period,
         coalesce(v.metric_value, 0) as metric_value,
         b.base_value
-    from email_vintage_raw as v
+    from email_vintage_complete as v
     left join base_counts as b
         on v.cohort = b.tactic_id and v.test_group = b.tst_grp_cd
     where b.base_value > 0  /* Only include valid test groups */
@@ -231,7 +271,8 @@ quit;
 /* Cleanup */
 proc datasets library=work nolist;
     delete EMAIL_WITH_DATES email_events_base all_email_events all_email_events_final 
-           base_counts daily_counts email_vintage_raw;
+           base_counts daily_counts email_vintage_temp periods period_grid 
+           email_vintage_filled email_vintage_complete;
 quit;
 
 %put EMAIL VINTAGE CURVES COMPLETE - email_vintage_curves_final created;
