@@ -123,121 +123,68 @@ quit;
 %put CHUNK 1 COMPLETE - EXACT TACTIC DETAILS WITH CORRECTED TACTIC IDS;
 
 /* ========================================================================= */
-/* CHUNK 2: APPOINTMENTS - CLEAN & REDUCED VERSION                         */
-/* Reduced from 5 separate queries to 1 CTE query                          */
+/* CHUNK 2: APPOINTMENTS SUCCESS - ACTIVITY-ONLY TABLE                     */
+/* Contains ONLY clients who had appointment activity (booked or kept)     */
 /* ========================================================================= */
 
 proc sql;
     %connectsql;
-    create table appt_client_level as
+    create table appointments_success as
     select * from connection to teradata (
-        WITH appt_raw as (
-            SELECT DISTINCT
-                camp.clnt_no,
-                camp.tactic_id,
-                camp.tst_grp_cd,
-                camp.rpt_grp_cd,
-                camp.TREATMT_MN,
-                camp.treatmt_strt_dt,
-                camp.treatmt_end_dt,
-                evt.strt_dt,
-                evt.evnt_dt,
-                evt.cntct_mthd_typ,
-                evt.evnt_sts_cd,
-                evt.evnt_shrt_note_txt,
-                rslt.sub_rslt_typ_cd,
-                
-                /* Apply appointment logic directly in query */
-                case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt
-                    then 1 else 0 end as APPT_BOOKED,
-                case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt
-                    and rslt.sub_rslt_typ_cd >= 1
-                    then 1 else 0 end as APPT_KEPT
-                    
-            FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS camp
-            INNER JOIN DG6V01.intcn_cntct_evnt_dly_d AS evt
-                ON evt.clnt_no = camp.clnt_no
-                AND evt.sys_src_id = 551
-                AND evt.cntct_evnt_typ = 1
-                AND evt.cntct_mthd_typ IN (1,2,9)
-                AND (
-                    evt.strt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
-                    OR evt.evnt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
-                )
-            LEFT JOIN DG6V01.intcn_cntct_evnt_rslt_dly AS rslt
-                ON rslt.css_event_id = evt.css_event_id
-                AND rslt.sys_src_id = evt.sys_src_id
-                AND rslt.clnt_no = evt.clnt_no
-                AND rslt.snap_dt = date '2025-11-06'
-            WHERE camp.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        ),
-        appt_with_appointments as (
-            SELECT
-                clnt_no,
-                tactic_id,
-                tst_grp_cd,
-                rpt_grp_cd,
-                TREATMT_MN,
-                treatmt_strt_dt as campaign_start,
-                treatmt_end_dt as campaign_end,
-                
-                /* Aggregate appointment metrics */
-                max(APPT_BOOKED) as APPT_BOOKED,
-                max(APPT_KEPT) as APPT_KEPT,
-                sum(APPT_BOOKED) as num_appts_booked,
-                sum(APPT_KEPT) as num_appts_kept,
-                min(strt_dt) as first_booked_date,
-                max(strt_dt) as last_booked_date,
-                min(case when APPT_KEPT=1 then evnt_dt else null end) as first_kept_date,
-                max(case when APPT_KEPT=1 then evnt_dt else null end) as last_kept_date
-                
-            FROM appt_raw
-            GROUP BY clnt_no, tactic_id, tst_grp_cd, rpt_grp_cd, TREATMT_MN, treatmt_strt_dt, treatmt_end_dt
-        )
-        
-        /* Join back to full campaign base - includes ALL clients */
         SELECT
-            base.clnt_no,
-            base.tactic_id,
-            base.tst_grp_cd,
-            base.rpt_grp_cd,
-            base.TREATMT_MN,
-            base.TREATMT_STRT_DT as campaign_start,
-            base.TREATMT_END_DT as campaign_end,
+            camp.clnt_no,
+            camp.tactic_id,
+            camp.tst_grp_cd,
+            camp.rpt_grp_cd,
+            camp.TREATMT_MN,
+            camp.treatmt_strt_dt as campaign_start,
+            camp.treatmt_end_dt as campaign_end,
             
-            /* If no appointments, set to 0 */
-            coalesce(appt.APPT_BOOKED, 0) as APPT_BOOKED,
-            coalesce(appt.APPT_KEPT, 0) as APPT_KEPT,
-            coalesce(appt.num_appts_booked, 0) as num_appts_booked,
-            coalesce(appt.num_appts_kept, 0) as num_appts_kept,
-            appt.first_booked_date,
-            appt.last_booked_date,
-            appt.first_kept_date,
-            appt.last_kept_date
+            /* Appointment success metrics - aggregated to client level */
+            max(case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt then 1 else 0 end) as APPT_BOOKED,
+            max(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then 1 else 0 end) as APPT_KEPT,
+            sum(case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt then 1 else 0 end) as num_appts_booked,
+            sum(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then 1 else 0 end) as num_appts_kept,
+            min(evt.strt_dt) as first_booked_date,
+            max(evt.strt_dt) as last_booked_date,
+            min(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then evt.evnt_dt else null end) as first_kept_date,
+            max(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then evt.evnt_dt else null end) as last_kept_date
             
-        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS base
-        LEFT JOIN appt_with_appointments AS appt
-            ON appt.clnt_no = base.clnt_no
-            AND appt.tactic_id = base.tactic_id
-        WHERE base.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        ORDER BY base.clnt_no, base.tactic_id
+        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS camp
+        INNER JOIN DG6V01.intcn_cntct_evnt_dly_d AS evt
+            ON evt.clnt_no = camp.clnt_no
+            AND evt.sys_src_id = 551
+            AND evt.cntct_evnt_typ = 1
+            AND evt.cntct_mthd_typ IN (1,2,9)
+            AND (
+                evt.strt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
+                OR evt.evnt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
+            )
+        LEFT JOIN DG6V01.intcn_cntct_evnt_rslt_dly AS rslt
+            ON rslt.css_event_id = evt.css_event_id
+            AND rslt.sys_src_id = evt.sys_src_id
+            AND rslt.clnt_no = evt.clnt_no
+            AND rslt.snap_dt = date '2025-11-06'
+        WHERE camp.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
+        GROUP BY camp.clnt_no, camp.tactic_id, camp.tst_grp_cd, camp.rpt_grp_cd, camp.TREATMT_MN, camp.treatmt_strt_dt, camp.treatmt_end_dt
+        ORDER BY camp.clnt_no, camp.tactic_id
     );
 quit;
 
 /* Validation */
 proc sql;
-    title "CHUNK 2 - Appointment Summary";
+    title "CHUNK 2 - Appointments Success (Activity Only)";
     select 
         tactic_id,
         tst_grp_cd,
-        count(distinct clnt_no) as total_clients,
+        count(distinct clnt_no) as clients_with_appointments,
         sum(APPT_BOOKED) as clients_booked,
         sum(APPT_KEPT) as clients_kept,
         sum(num_appts_booked) as total_appts_booked,
         sum(num_appts_kept) as total_appts_kept
-    from appt_client_level
+    from appointments_success
     group by tactic_id, tst_grp_cd
     order by tactic_id, tst_grp_cd;
 quit;
 
-%put CHUNK 2 COMPLETE - APPOINTMENTS REDUCED FROM 5 QUERIES TO 1;
+%put CHUNK 2 COMPLETE - APPOINTMENTS SUCCESS (ACTIVITY ONLY);
