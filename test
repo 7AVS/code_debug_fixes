@@ -1,108 +1,129 @@
 /* ========================================================================= */
-/* STUDENT SEGMENT DIAGNOSTIC - Find the Real Data Structure               */
-/* Purpose: Investigate why student segment parsing returns all zeros       */
+/* STUDENT RCL VINTAGE CURVES - V2 CLEAN & OPTIMIZED                      */
+/* Purpose: Streamlined vintage curve analysis - reduced and organized      */
 /* ========================================================================= */
 
-/* STEP 1: Look at raw TACTIC_DECISN_VRB_INFO field */
+/* CHUNK 1: TACTIC DETAILS FOUNDATION - SINGLE OPTIMIZED QUERY */
 proc sql;
     %connectsql;
-    create table raw_tactic_info as
+    create table tactic_details as
     select * from connection to teradata (
         SELECT DISTINCT
+            tactic.clnt_no,
             tactic.TACTIC_ID,
-            tactic.CLNT_NO,
-            tactic.TACTIC_DECISN_VRB_INFO
+            tactic.TREATMT_STRT_DT,
+            tactic.TREATMT_END_DT,
+            tactic.TST_GRP_CD,
+            tactic.RPT_GRP_CD,
+            tactic.TREATMT_MN,
+            PER.EMPL_STS_CD,
+            PER.OCCPT_CD,
+            
+            /* STUDENT SEGMENT FLAGS - Convert Y/N to 1/0 */
+            CASE 
+                WHEN TACTIC.tactic_id = '2024196SLC' AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1)) = 'Y'
+                THEN 1
+                WHEN TACTIC.tactic_id = '2025196SLC' AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1)) = 'Y'
+                THEN 1
+                ELSE 0
+            END AS STUDENT_NG_IND,
+            
+            CASE 
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1)) = 'Y'
+                THEN 1 
+                ELSE 0
+            END AS STUDENT_SB_IND,
+            
+            CASE 
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1)) = 'Y'
+                THEN 1 
+                ELSE 0
+            END AS STUDENT_IR_IND,
+            
+            /* GRADUATION DATE */
+            CASE
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC')
+                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) = 'N/A'
+                THEN 'N/A'
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC')
+                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) <> 'N/A'
+                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10))
+                ELSE NULL
+            END AS GRAD_DATE,
+            
+            /* COMMUNICATION CHANNEL FLAGS - Convert Y/N to 1/0 */
+            CASE 
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1)) = 'Y'
+                THEN 1 
+                ELSE 0
+            END AS EM_IND,
+            
+            CASE 
+                WHEN TACTIC.tactic_id IN ('2024196SLC', '2025196SLC') AND 
+                     TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1)) = 'Y'
+                THEN 1 
+                ELSE 0
+            END AS OLB_IND,
+            
+            /* CHANNEL ASSIGNMENT - Consolidated logic */
+            CASE
+                /* 2024 Campaign Logic */
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2022 AND RPT_GRP_CD IN ('PSLCRG01', 'PSLCRG02') THEN 'EM'
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG02' THEN 'EM'
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG01' THEN 'IM_MB'
+                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD = 'PSLCRG03' THEN 'IM_MB_EM'
+                
+                /* 2025 First Campaign Logic */
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC001A' THEN 'IM_MB'
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC003A' THEN 'IM_EM_MB'
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC005A' THEN 'IM_EM_MB'
+                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = 'PSLCNMAA' THEN 'CONTROL'
+                
+                /* 2025 Reminder Logic */
+                WHEN TACTIC.tactic_id = '2025227SLC' THEN 'EM'
+                
+                ELSE 'OTHER'
+            END AS FULL_CHANNEL
+            
         FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
+        LEFT JOIN (
+            SELECT distinct CLNT_NO, SNAP_DT, OCCPT_CD, empl_sts_CD
+            FROM DDWV01.PERS_dly
+            where SNAP_DT = '2025-10-31'
+        ) as PER
+            on tactic.CLNT_NO = PER.CLNT_NO
         WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        AND tactic.TACTIC_DECISN_VRB_INFO IS NOT NULL
-        ORDER BY TACTIC.TACTIC_ID, TACTIC.CLNT_NO
+        order by TACTIC.CLNT_NO
     );
 quit;
 
-/* STEP 2: Sample the actual content */
-/* Add length calculation in SAS */
-data raw_tactic_info;
-    set raw_tactic_info;
-    info_length = length(TACTIC_DECISN_VRB_INFO);
-run;
-
-proc print data=raw_tactic_info (obs=10);
-    title "DIAGNOSTIC: Sample of TACTIC_DECISN_VRB_INFO Content";
-    var tactic_id clnt_no info_length TACTIC_DECISN_VRB_INFO;
-run;
-
-/* STEP 3: Check what strings actually exist in the data */
+/* VALIDATION SUMMARY */
 proc sql;
-    title "DIAGNOSTIC: Search String Analysis";
+    title "CHUNK 1 - Tactic Details Foundation Summary";
     select 
-        TACTIC_ID,
-        count(*) as total_records,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'Student NG') > 0 then 1 else 0 end) as has_student_ng,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'Student SB') > 0 then 1 else 0 end) as has_student_sb,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'Student IR') > 0 then 1 else 0 end) as has_student_ir,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'EM Ind:') > 0 then 1 else 0 end) as has_em_ind,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'OLB Ind:') > 0 then 1 else 0 end) as has_olb_ind,
-        sum(case when index(TACTIC_DECISN_VRB_INFO, 'Grad Date:') > 0 then 1 else 0 end) as has_grad_date,
-        sum(case when TACTIC_DECISN_VRB_INFO is null then 1 else 0 end) as null_records
-    from raw_tactic_info
-    group by TACTIC_ID
-    order by TACTIC_ID;
-quit;
-
-/* STEP 4: Test the parsing logic with actual data */
-data parsing_test;
-    set raw_tactic_info;
-    
-    /* Test current parsing logic */
-    if tactic_id = '2024196SLC' then 
-        student_ng_test = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1));
-    else if tactic_id = '2025196SLC' then
-        student_ng_test = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1));
-    
-    /* Also test different offset positions */
-    student_ng_pos = index(TACTIC_DECISN_VRB_INFO, 'Student NG');
-    if student_ng_pos > 0 then do;
-        student_ng_extract_10 = substr(TACTIC_DECISN_VRB_INFO, student_ng_pos+10, 5);
-        student_ng_extract_11 = substr(TACTIC_DECISN_VRB_INFO, student_ng_pos+11, 5);
-        student_ng_extract_12 = substr(TACTIC_DECISN_VRB_INFO, student_ng_pos+12, 5);
-        student_ng_extract_13 = substr(TACTIC_DECISN_VRB_INFO, student_ng_pos+13, 5);
-    end;
-    
-    keep tactic_id clnt_no TACTIC_DECISN_VRB_INFO student_ng_pos student_ng_test 
-         student_ng_extract_10 student_ng_extract_11 student_ng_extract_12 student_ng_extract_13;
-run;
-
-/* STEP 5: Show parsing results */
-proc print data=parsing_test (obs=20);
-    title "DIAGNOSTIC: Student NG Parsing Test Results";
-    where student_ng_pos > 0;
-run;
-
-/* STEP 6: Check if there are alternative fields with student info */
-proc sql;
-    %connectsql;
-    create table alternative_fields as
-    select * from connection to teradata (
-        SELECT DISTINCT
-            tactic.TACTIC_ID,
-            count(*) as record_count
-        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
-        WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        GROUP BY tactic.TACTIC_ID
-    );
-quit;
-
-proc sql;
-    title "DIAGNOSTIC: Record Counts by Tactic ID";
-    select * from alternative_fields;
+        tactic_id,
+        tst_grp_cd,
+        count(*) as total_clients,
+        sum(STUDENT_NG_IND) as student_ng_count,
+        sum(STUDENT_SB_IND) as student_sb_count, 
+        sum(STUDENT_IR_IND) as student_ir_count,
+        sum(EM_IND) as email_enabled,
+        sum(OLB_IND) as olb_enabled
+    from tactic_details
+    group by tactic_id, tst_grp_cd
+    order by tactic_id, tst_grp_cd;
 quit;
 
 %put =======================================================================;
-%put STUDENT SEGMENT DIAGNOSTIC COMPLETE;
+%put CHUNK 1 COMPLETE - CLEAN TACTIC DETAILS FOUNDATION;
 %put =======================================================================;
-%put Check the results to see:;
-%put 1. What is actually in TACTIC_DECISN_VRB_INFO field;
-%put 2. Whether our search strings exist in the data;
-%put 3. What the correct parsing offsets should be;
-%put 4. Whether student segment data exists at all;
+%put - Single optimized query (vs 4+ steps in bloated version);
+%put - Fixed Y/N to 1/0 conversion for student segments;  
+%put - Same business logic, cleaner implementation;
+%put - Ready for Chunk 2: Email integration;
 %put =======================================================================;
