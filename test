@@ -1,278 +1,89 @@
 /* ========================================================================= */
-/* EMAIL VINTAGE CURVES - STREAMLINED VERSION                              */
-/* Purpose: Create cumulative email performance vintage curves             */
+/* EMAIL VINTAGE DIAGNOSTIC - Find the Data Issues                         */
 /* PREREQUISITE: Run new_vintage_complete.sas first                        */
 /* ========================================================================= */
 
-/* STEP 1: GET EMAIL DATA WITH BOTH FLAGS AND EVENT DATES */
+/* STEP 1: Check what's in tactic_details */
+proc sql;
+    title "DIAGNOSTIC: What cohorts and test groups exist in tactic_details?";
+    select 
+        TACTIC_ID,
+        TST_GRP_CD,
+        count(distinct CLNT_NO) as client_count
+    from tactic_details
+    group by TACTIC_ID, TST_GRP_CD
+    order by TACTIC_ID, TST_GRP_CD;
+quit;
+
+/* STEP 2: Check email data by cohort */
 proc sql;
     %connectsql;
-    CREATE TABLE EMAIL_WITH_DATES AS
+    CREATE TABLE email_check AS
     SELECT * FROM CONNECTION TO TERADATA(
         SELECT DISTINCT
             FEEDBACK_MASTER.TREATMENT_ID,
-            FEEDBACK_MASTER.CLNT_NO,
-            
-            /* Binary flags */
-            Max(CASE WHEN disposition_cd=1 THEN 1 ELSE 0 END) AS email_sent,
-            Max(CASE WHEN disposition_cd=2 THEN 1 ELSE 0 END) AS email_opened,
-            Max(CASE WHEN disposition_cd=3 THEN 1 ELSE 0 END) AS email_clicked,
-            Max(CASE WHEN disposition_cd=4 THEN 1 ELSE 0 END) AS email_unsubscribed,
-            Max(CASE WHEN disposition_cd=5 THEN 1 ELSE 0 END) AS email_hardbounce,
-            
-            /* Event dates */
-            MAX(CASE WHEN disposition_cd=1 THEN CAST(disposition_dt_tm AS DATE) END) AS email_sent_date,
-            MAX(CASE WHEN disposition_cd=2 THEN CAST(disposition_dt_tm AS DATE) END) AS email_opened_date,
-            MAX(CASE WHEN disposition_cd=3 THEN CAST(disposition_dt_tm AS DATE) END) AS email_clicked_date,
-            MAX(CASE WHEN disposition_cd=4 THEN CAST(disposition_dt_tm AS DATE) END) AS email_unsubscribed_date,
-            MAX(CASE WHEN disposition_cd=5 THEN CAST(disposition_dt_tm AS DATE) END) AS email_hardbounce_date
-            
+            count(distinct FEEDBACK_MASTER.CLNT_NO) as email_clients
         FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
-        INNER JOIN DTZV01.VENDOR_FEEDBACK_EVENT FEEDBACK_EVENT
-            ON FEEDBACK_MASTER.consumer_id_hashed = FEEDBACK_EVENT.consumer_id_hashed
-            AND FEEDBACK_MASTER.TREATMENT_ID = FEEDBACK_EVENT.TREATMENT_ID
-        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        GROUP BY 1,2
+        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '20251968LC', '2025227SLC')
+        GROUP BY 1
+        ORDER BY 1
     );
 QUIT;
 
-/* STEP 2: CREATE EMAIL EVENTS WITH CAMPAIGN CONTEXT */
 proc sql;
-    create table email_events_base as
+    title "DIAGNOSTIC: What cohorts have email data?";
+    select * from email_check;
+quit;
+
+/* STEP 3: Check if email data joins properly to tactic_details */
+proc sql;
+    title "DIAGNOSTIC: How many clients have both tactic and email data?";
     select 
-        t.CLNT_NO,
         t.TACTIC_ID,
         t.TST_GRP_CD,
-        t.TREATMT_STRT_DT as campaign_start,
-        
-        /* Binary flags */
-        coalesce(e.email_sent, 0) as email_sent,
-        coalesce(e.email_opened, 0) as email_opened,
-        coalesce(e.email_clicked, 0) as email_clicked,
-        coalesce(e.email_unsubscribed, 0) as email_unsubscribed,
-        coalesce(e.email_hardbounce, 0) as email_hardbounce,
-        
-        /* Event dates */
-        e.email_sent_date,
-        e.email_opened_date,
-        e.email_clicked_date,
-        e.email_unsubscribed_date,
-        e.email_hardbounce_date
-        
+        count(distinct t.CLNT_NO) as tactic_clients,
+        sum(case when e.TREATMENT_ID is not null then 1 else 0 end) as clients_with_email
     from tactic_details as t
-    left join EMAIL_WITH_DATES as e
-        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO;
+    left join email_check_detail as e
+        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO
+    group by t.TACTIC_ID, t.TST_GRP_CD
+    order by t.TACTIC_ID, t.TST_GRP_CD;
 quit;
 
-/* STEP 3: CONVERT TO DAILY EVENTS FORMAT */
-data all_email_events;
-    set email_events_base;
-    
-    /* Email Sent Events - use flag AND date for validation */
-    if email_sent = 1 and not missing(email_sent_date) then do;
-        days_to_event = email_sent_date - campaign_start;
-        if 0 <= days_to_event <= 120 then do;
-            metric = 'Email_Sent';
-            output;
-        end;
-    end;
-    
-    /* Email Opened Events */
-    if email_opened = 1 and not missing(email_opened_date) then do;
-        days_to_event = email_opened_date - campaign_start;
-        if 0 <= days_to_event <= 120 then do;
-            metric = 'Email_Opened';
-            output;
-        end;
-    end;
-    
-    /* Email Clicked Events */
-    if email_clicked = 1 and not missing(email_clicked_date) then do;
-        days_to_event = email_clicked_date - campaign_start;
-        if 0 <= days_to_event <= 120 then do;
-            metric = 'Email_Clicked';
-            output;
-        end;
-    end;
-    
-    /* Email Unsubscribed Events */
-    if email_unsubscribed = 1 and not missing(email_unsubscribed_date) then do;
-        days_to_event = email_unsubscribed_date - campaign_start;
-        if 0 <= days_to_event <= 120 then do;
-            metric = 'Email_Unsubscribed';
-            output;
-        end;
-    end;
-    
-    /* Email Hard Bounce Events */
-    if email_hardbounce = 1 and not missing(email_hardbounce_date) then do;
-        days_to_event = email_hardbounce_date - campaign_start;
-        if 0 <= days_to_event <= 120 then do;
-            metric = 'Email_Hardbounce';
-            output;
-        end;
-    end;
-    
-    keep clnt_no tactic_id tst_grp_cd days_to_event metric;
-run;
-
-/* Add Action_Combined for 2025196SLC */
-data all_email_events_final;
-    set all_email_events;
-    output;
-    if tactic_id = '2025196SLC' and tst_grp_cd in ('TG1', 'TG4') then do;
-        tst_grp_cd = 'Action_Combined';
-        output;
-    end;
-run;
-
-/* STEP 4: CREATE CUMULATIVE VINTAGE CURVES */
+/* STEP 4: Get detailed email data for join check */
 proc sql;
-    /* Get base counts */
-    create table base_counts as
-    select tactic_id, tst_grp_cd, count(distinct clnt_no) as base_value
-    from tactic_details group by 1,2
-    union all
-    select tactic_id, 'Action_Combined', sum(case when tst_grp_cd in ('TG1','TG4') then 1 else 0 end)
-    from (select tactic_id, tst_grp_cd, count(distinct clnt_no) as cnt from tactic_details group by 1,2)
-    group by tactic_id;
-    
-    /* Pre-aggregate daily events */
-    create table daily_counts as
+    %connectsql;
+    CREATE TABLE email_check_detail AS
+    SELECT * FROM CONNECTION TO TERADATA(
+        SELECT DISTINCT
+            FEEDBACK_MASTER.TREATMENT_ID,
+            FEEDBACK_MASTER.CLNT_NO
+        FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
+        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '20251968LC', '2025227SLC')
+    );
+QUIT;
+
+/* Re-run the join check */
+proc sql;
+    title "DIAGNOSTIC: Tactic vs Email Data Match";
     select 
-        tactic_id as cohort, metric, tst_grp_cd as test_group, days_to_event as period,
-        count(distinct clnt_no) as daily_count
-    from all_email_events_final
-    group by 1,2,3,4;
+        t.TACTIC_ID,
+        t.TST_GRP_CD,
+        count(distinct t.CLNT_NO) as tactic_clients,
+        sum(case when e.TREATMENT_ID is not null then 1 else 0 end) as clients_with_email,
+        calculated clients_with_email / calculated tactic_clients * 100 as match_pct format=8.1
+    from tactic_details as t
+    left join email_check_detail as e
+        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO
+    group by t.TACTIC_ID, t.TST_GRP_CD
+    order by t.TACTIC_ID, t.TST_GRP_CD;
 quit;
 
-/* Calculate cumulative totals using DATA step with RETAIN */
-data email_vintage_temp;
-    set daily_counts;
-    by cohort metric test_group;
-    
-    /* Initialize cumulative counter at start of each group */
-    retain cumulative_count;
-    if first.test_group then cumulative_count = 0;
-    
-    /* Add daily count to running total */
-    cumulative_count + daily_count;
-    metric_value = cumulative_count;
-    
-    keep cohort metric test_group period metric_value;
-run;
-
-/* Fill in missing periods (0-120) */
-data periods;
-    do period = 0 to 120;
-        output;
-    end;
-run;
-
-proc sql;
-    create table period_grid as
-    select distinct
-        v.cohort,
-        v.metric,
-        v.test_group,
-        p.period
-    from email_vintage_temp as v
-    cross join periods as p;
-quit;
-
-/* Merge grid with cumulative data and forward-fill */
-proc sql;
-    create table email_vintage_filled as
-    select
-        g.cohort,
-        g.metric,
-        g.test_group,
-        g.period,
-        v.metric_value
-    from period_grid as g
-    left join email_vintage_temp as v
-        on v.cohort = g.cohort
-        and v.metric = g.metric
-        and v.test_group = g.test_group
-        and v.period = g.period
-    order by g.cohort, g.metric, g.test_group, g.period;
-quit;
-
-/* Forward-fill missing cumulative values */
-data email_vintage_complete;
-    set email_vintage_filled;
-    by cohort metric test_group;
-    
-    /* Carry forward last known value */
-    retain last_value;
-    if first.test_group then last_value = 0;
-    if not missing(metric_value) then last_value = metric_value;
-    else metric_value = last_value;
-    
-    drop last_value;
-run;
-
-/* Add base values and clean labels */
-proc sql;
-    create table email_vintage_curves_final as
-    select 
-        case v.cohort
-            when '2024196SLC' then '2024'
-            when '2025196SLC' then '2025_First' 
-            when '2025227SLC' then '2025_Reminder'
-            else v.cohort
-        end as cohort,
-        v.metric,
-        case 
-            when v.cohort = '2025196SLC' then
-                case v.test_group
-                    when 'TG1' then 'Action A'
-                    when 'TG4' then 'Action B'
-                    when 'Action_Combined' then 'Action Combined'
-                    when 'TG7' then 'Control'
-                    else v.test_group
-                end
-            else 
-                case v.test_group
-                    when 'TG7' then 'Control'
-                    when 'TG1' then 'Action'
-                    when 'TG4' then 'Action'
-                    else v.test_group
-                end
-        end as test_group,
-        v.period,
-        coalesce(v.metric_value, 0) as metric_value,
-        b.base_value
-    from email_vintage_complete as v
-    left join base_counts as b
-        on v.cohort = b.tactic_id and v.test_group = b.tst_grp_cd
-    where b.base_value > 0  /* Only include valid test groups */
-    order by 1,2,3,4;
-quit;
-
-/* STEP 5: OUTPUT AND VERIFICATION */
-proc print data=email_vintage_curves_final(obs=30);
-    title "Email Vintage Curves - Sample Output";
-    title2 "Metrics: Email_Sent, Email_Opened, Email_Clicked, Email_Unsubscribed, Email_Hardbounce";
-run;
-
-proc sql;
-    title "Email Vintage Curves - Day 120 Summary";
-    select cohort, metric, test_group,
-           max(case when period=120 then metric_value end) as day_120_value,
-           max(base_value) as base_clients,
-           calculated day_120_value / calculated base_clients as rate format=percent8.2
-    from email_vintage_curves_final
-    where period = 120
-    group by 1,2,3
-    order by 1,2,3;
-quit;
-
-/* Cleanup */
-proc datasets library=work nolist;
-    delete EMAIL_WITH_DATES email_events_base all_email_events all_email_events_final 
-           base_counts daily_counts email_vintage_temp periods period_grid 
-           email_vintage_filled email_vintage_complete;
-quit;
-
-%put EMAIL VINTAGE CURVES COMPLETE - email_vintage_curves_final created;
+%put =======================================================================;
+%put EMAIL DIAGNOSTIC COMPLETE;
+%put =======================================================================;
+%put Check the results above to identify:;
+%put 1. Which cohorts exist in tactic_details;
+%put 2. Which cohorts have email data;
+%put 3. Match rates between tactic and email data;
+%put =======================================================================;
