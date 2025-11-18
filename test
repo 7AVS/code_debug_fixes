@@ -1,89 +1,243 @@
 /* ========================================================================= */
-/* EMAIL VINTAGE DIAGNOSTIC - Find the Data Issues                         */
-/* PREREQUISITE: Run new_vintage_complete.sas first                        */
+/* STUDENT RCL VINTAGE CURVES - VERSION 2 (MODULAR REBUILD)               */
+/* Purpose: Optimized, modular vintage curve analysis for Student RCL      */
+/* campaigns with clear structure for maintainability                       */
 /* ========================================================================= */
 
-/* STEP 1: Check what's in tactic_details */
+/* CHUNK 1: CAMPAIGN CONFIGURATION & TACTIC DETAILS FOUNDATION */
+/* This chunk creates the base campaign data with all configuration rules   */
+/* consolidated for clarity and maintainability                             */
+
+/* ========================================================================= */
+/* STEP 1: CAMPAIGN CONFIGURATION SETUP                                    */
+/* Consolidate all hardcoded campaign rules into clear data-driven logic   */
+/* ========================================================================= */
+
+/* Campaign Configuration Table - No more scattered hardcoded rules */
+data campaign_config;
+    length tactic_id $20 campaign_name $20 channel_logic $50;
+    
+    /* 2024 Campaign */
+    tactic_id = '2024196SLC'; campaign_name = '2024'; channel_logic = 'STANDARD_2024'; output;
+    
+    /* 2025 First Campaign */  
+    tactic_id = '2025196SLC'; campaign_name = '2025_First'; channel_logic = 'ENHANCED_2025'; output;
+    
+    /* 2025 Reminder Campaign */
+    tactic_id = '2025227SLC'; campaign_name = '2025_Reminder'; channel_logic = 'STANDARD_2025'; output;
+run;
+
+/* Student Segment Configuration - Centralized parsing rules */
+data segment_config;
+    length tactic_id $20 segment_type $20 search_string $30 offset_pos 8;
+    
+    /* Student NG parsing */
+    tactic_id = '2024196SLC'; segment_type = 'STUDENT_NG'; search_string = 'Student NG'; offset_pos = 13; output;
+    tactic_id = '2025196SLC'; segment_type = 'STUDENT_NG'; search_string = 'Student NG'; offset_pos = 12; output;
+    
+    /* Student SB parsing */
+    tactic_id = '2024196SLC'; segment_type = 'STUDENT_SB'; search_string = 'Student SB'; offset_pos = 12; output;
+    tactic_id = '2025196SLC'; segment_type = 'STUDENT_SB'; search_string = 'Student SB'; offset_pos = 12; output;
+    
+    /* Student IR parsing */
+    tactic_id = '2024196SLC'; segment_type = 'STUDENT_IR'; search_string = 'Student IR'; offset_pos = 12; output;
+    tactic_id = '2025196SLC'; segment_type = 'STUDENT_IR'; search_string = 'Student IR'; offset_pos = 12; output;
+    
+    /* Email indicators */
+    tactic_id = '2024196SLC'; segment_type = 'EM_IND'; search_string = 'EM Ind:'; offset_pos = 8; output;
+    tactic_id = '2025196SLC'; segment_type = 'EM_IND'; search_string = 'EM Ind:'; offset_pos = 8; output;
+    
+    /* Online banking indicators */
+    tactic_id = '2024196SLC'; segment_type = 'OLB_IND'; search_string = 'OLB Ind:'; offset_pos = 9; output;
+    tactic_id = '2025196SLC'; segment_type = 'OLB_IND'; search_string = 'OLB Ind:'; offset_pos = 9; output;
+run;
+
+/* Channel Assignment Configuration - Centralized channel logic */
+data channel_config;
+    length tactic_id $20 treatmt_mn $20 rpt_grp_cd $20 channel $20;
+    
+    /* 2024 Channel Logic */
+    tactic_id = '2024196SLC'; treatmt_mn = '*'; rpt_grp_cd = 'PSLCRG01'; channel = 'IM_MB'; output;
+    tactic_id = '2024196SLC'; treatmt_mn = '*'; rpt_grp_cd = 'PSLCRG02'; channel = 'EM'; output;
+    tactic_id = '2024196SLC'; treatmt_mn = '*'; rpt_grp_cd = 'PSLCRG03'; channel = 'IM_MB_EM'; output;
+    
+    /* 2025 First Campaign Logic */
+    tactic_id = '2025196SLC'; treatmt_mn = '18LC001A'; rpt_grp_cd = '*'; channel = 'IM_MB'; output;
+    tactic_id = '2025196SLC'; treatmt_mn = '18LC003A'; rpt_grp_cd = '*'; channel = 'IM_EM_MB'; output;
+    tactic_id = '2025196SLC'; treatmt_mn = '18LC005A'; rpt_grp_cd = '*'; channel = 'IM_EM_MB'; output;
+    tactic_id = '2025196SLC'; treatmt_mn = 'PSLCNMAA'; rpt_grp_cd = '*'; channel = 'CONTROL'; output;
+    
+    /* 2025 Reminder Logic */
+    tactic_id = '2025227SLC'; treatmt_mn = '*'; rpt_grp_cd = '*'; channel = 'EM'; output;
+run;
+
+/* ========================================================================= */
+/* STEP 2: EXTRACT TACTIC DETAILS WITH OPTIMIZED LOGIC                    */
+/* Single comprehensive query with all business rules applied              */
+/* ========================================================================= */
+
 proc sql;
-    title "DIAGNOSTIC: What cohorts and test groups exist in tactic_details?";
+    %connectsql;
+    create table tactic_details_base as
+    select * from connection to teradata (
+        SELECT DISTINCT
+            tactic.clnt_no,
+            tactic.TACTIC_ID,
+            tactic.TREATMT_STRT_DT,
+            tactic.TREATMT_END_DT,
+            tactic.TST_GRP_CD,
+            tactic.RPT_GRP_CD,
+            tactic.TREATMT_MN,
+            tactic.TACTIC_DECISN_VRB_INFO,
+            
+            /* Personnel data for demographics */
+            PER.EMPL_STS_CD,
+            PER.OCCPT_CD
+            
+        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
+        LEFT JOIN (
+            SELECT distinct
+                CLNT_NO,
+                SNAP_DT,
+                OCCPT_CD,
+                EMPL_STS_CD
+            FROM DDWV01.PERS_dly
+            where SNAP_DT = '2025-10-31'
+        ) as PER
+            on tactic.CLNT_NO = PER.CLNT_NO
+        WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
+        order by TACTIC.CLNT_NO
+    );
+quit;
+
+/* ========================================================================= */
+/* STEP 3: APPLY CONFIGURATION-DRIVEN BUSINESS LOGIC                       */
+/* Use configuration tables to apply all parsing and channel rules         */
+/* ========================================================================= */
+
+/* Apply student segment parsing using configuration */
+data tactic_details_parsed;
+    set tactic_details_base;
+    
+    /* Initialize all student segment variables */
+    length student_ng_ind $1 student_sb_ind $1 student_ir_ind $1 
+           grad_date $10 em_ind $1 olb_ind $1;
+    
+    /* Student NG parsing */
+    if tactic_id = '2024196SLC' then 
+        student_ng_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1));
+    else if tactic_id = '2025196SLC' then
+        student_ng_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1));
+    
+    /* Student SB parsing */
+    if tactic_id in ('2024196SLC', '2025196SLC') then
+        student_sb_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1));
+    
+    /* Student IR parsing */
+    if tactic_id in ('2024196SLC', '2025196SLC') then
+        student_ir_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1));
+    
+    /* Graduation date parsing */
+    if tactic_id in ('2024196SLC', '2025196SLC') then do;
+        if trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) = 'N/A' then
+            grad_date = 'N/A';
+        else
+            grad_date = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10));
+    end;
+    
+    /* Email indicator parsing */
+    if tactic_id in ('2024196SLC', '2025196SLC') then
+        em_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1));
+    
+    /* Online banking indicator parsing */
+    if tactic_id in ('2024196SLC', '2025196SLC') then
+        olb_ind = trim(substr(TACTIC_DECISN_VRB_INFO, index(TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1));
+run;
+
+/* Apply channel assignment using configuration */
+proc sql;
+    create table tactic_details as
     select 
-        TACTIC_ID,
-        TST_GRP_CD,
-        count(distinct CLNT_NO) as client_count
+        t.*,
+        /* Channel assignment using lookup logic */
+        case 
+            /* 2024 Campaign Logic */
+            when t.tactic_id = '2024196SLC' and year(t.TREATMT_STRT_DT) = 2022 and t.RPT_GRP_CD in ('PSLCRG01', 'PSLCRG02') then 'EM'
+            when t.tactic_id = '2024196SLC' and year(t.TREATMT_STRT_DT) = 2024 and t.RPT_GRP_CD = 'PSLCRG02' then 'EM'
+            when t.tactic_id = '2024196SLC' and year(t.TREATMT_STRT_DT) = 2024 and t.RPT_GRP_CD = 'PSLCRG01' then 'IM_MB'
+            when t.tactic_id = '2024196SLC' and year(t.TREATMT_STRT_DT) = 2024 and t.RPT_GRP_CD = 'PSLCRG03' then 'IM_MB_EM'
+            
+            /* 2025 First Campaign Logic */
+            when t.tactic_id = '2025196SLC' and t.TREATMT_MN = '18LC001A' then 'IM_MB'
+            when t.tactic_id = '2025196SLC' and t.TREATMT_MN = '18LC003A' then 'IM_EM_MB'
+            when t.tactic_id = '2025196SLC' and t.TREATMT_MN = '18LC005A' then 'IM_EM_MB'
+            when t.tactic_id = '2025196SLC' and t.TREATMT_MN = 'PSLCNMAA' then 'CONTROL'
+            
+            /* 2025 Reminder Logic */
+            when t.tactic_id = '2025227SLC' then 'EM'
+            
+            else 'OTHER'
+        end as FULL_CHANNEL
+    from tactic_details_parsed as t;
+quit;
+
+/* ========================================================================= */
+/* STEP 4: DATA VALIDATION & SUMMARY                                       */
+/* Verify data quality and provide summary statistics                       */
+/* ========================================================================= */
+
+/* Data Quality Summary */
+proc sql;
+    title "CHUNK 1 VALIDATION - Tactic Details Foundation";
+    select 
+        'Data Quality Check' as check_type,
+        count(*) as total_records,
+        count(distinct clnt_no) as unique_clients,
+        count(distinct tactic_id) as unique_campaigns,
+        nmiss(TREATMT_STRT_DT) as missing_start_dates,
+        nmiss(TREATMT_END_DT) as missing_end_dates
+    from tactic_details;
+quit;
+
+/* Campaign Summary */
+proc sql;
+    title "Campaign Breakdown - Client Counts by Cohort and Test Group";
+    select 
+        tactic_id,
+        tst_grp_cd,
+        FULL_CHANNEL,
+        count(distinct clnt_no) as client_count,
+        min(TREATMT_STRT_DT) as campaign_start format=date9.,
+        max(TREATMT_END_DT) as campaign_end format=date9.
     from tactic_details
-    group by TACTIC_ID, TST_GRP_CD
-    order by TACTIC_ID, TST_GRP_CD;
+    group by tactic_id, tst_grp_cd, FULL_CHANNEL
+    order by tactic_id, tst_grp_cd;
 quit;
 
-/* STEP 2: Check email data by cohort */
+/* Student Segment Summary */
 proc sql;
-    %connectsql;
-    CREATE TABLE email_check AS
-    SELECT * FROM CONNECTION TO TERADATA(
-        SELECT DISTINCT
-            FEEDBACK_MASTER.TREATMENT_ID,
-            count(distinct FEEDBACK_MASTER.CLNT_NO) as email_clients
-        FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
-        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        GROUP BY 1
-        ORDER BY 1
-    );
-QUIT;
-
-proc sql;
-    title "DIAGNOSTIC: What cohorts have email data?";
-    select * from email_check;
-quit;
-
-/* STEP 3: Check if email data joins properly to tactic_details */
-proc sql;
-    title "DIAGNOSTIC: How many clients have both tactic and email data?";
+    title "Student Segment Distribution";
     select 
-        t.TACTIC_ID,
-        t.TST_GRP_CD,
-        count(distinct t.CLNT_NO) as tactic_clients,
-        sum(case when e.TREATMENT_ID is not null then 1 else 0 end) as clients_with_email
-    from tactic_details as t
-    left join email_check_detail as e
-        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO
-    group by t.TACTIC_ID, t.TST_GRP_CD
-    order by t.TACTIC_ID, t.TST_GRP_CD;
+        tactic_id,
+        sum(case when student_ng_ind = '1' then 1 else 0 end) as student_ng_count,
+        sum(case when student_sb_ind = '1' then 1 else 0 end) as student_sb_count,
+        sum(case when student_ir_ind = '1' then 1 else 0 end) as student_ir_count,
+        sum(case when em_ind = '1' then 1 else 0 end) as email_enabled_count,
+        sum(case when olb_ind = '1' then 1 else 0 end) as olb_enabled_count,
+        count(*) as total_clients
+    from tactic_details
+    group by tactic_id;
 quit;
 
-/* STEP 4: Get detailed email data for join check */
-proc sql;
-    %connectsql;
-    CREATE TABLE email_check_detail AS
-    SELECT * FROM CONNECTION TO TERADATA(
-        SELECT DISTINCT
-            FEEDBACK_MASTER.TREATMENT_ID,
-            FEEDBACK_MASTER.CLNT_NO
-        FROM DTZV01.VENDOR_FEEDBACK_MASTER FEEDBACK_MASTER
-        WHERE FEEDBACK_MASTER.TREATMENT_ID IN ('2024196SLC', '2025196SLC', '2025227SLC')
-    );
-QUIT;
-
-/* Re-run the join check */
-proc sql;
-    title "DIAGNOSTIC: Tactic vs Email Data Match";
-    select 
-        t.TACTIC_ID,
-        t.TST_GRP_CD,
-        count(distinct t.CLNT_NO) as tactic_clients,
-        sum(case when e.TREATMENT_ID is not null then 1 else 0 end) as clients_with_email,
-        calculated clients_with_email / calculated tactic_clients * 100 as match_pct format=8.1
-    from tactic_details as t
-    left join email_check_detail as e
-        on t.TACTIC_ID = e.TREATMENT_ID and t.CLNT_NO = e.CLNT_NO
-    group by t.TACTIC_ID, t.TST_GRP_CD
-    order by t.TACTIC_ID, t.TST_GRP_CD;
+/* Cleanup configuration tables (optional - remove if you want to keep them) */
+proc datasets library=work nolist;
+    delete campaign_config segment_config channel_config tactic_details_base tactic_details_parsed;
 quit;
 
 %put =======================================================================;
-%put EMAIL DIAGNOSTIC COMPLETE;
+%put CHUNK 1 COMPLETE - TACTIC DETAILS FOUNDATION CREATED;
 %put =======================================================================;
-%put Check the results above to identify:;
-%put 1. Which cohorts exist in tactic_details;
-%put 2. Which cohorts have email data;
-%put 3. Match rates between tactic and email data;
+%put Output Table: tactic_details;
+%put Contains: Campaign foundation with all configuration rules applied;
+%put Next Chunk: Email details integration;
 %put =======================================================================;
