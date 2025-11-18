@@ -11,8 +11,7 @@ proc sql;
         SELECT DISTINCT
             tactic.TACTIC_ID,
             tactic.CLNT_NO,
-            tactic.TACTIC_DECISN_VRB_INFO,
-            length(tactic.TACTIC_DECISN_VRB_INFO) as info_length
+            tactic.TACTIC_DECISN_VRB_INFO
         FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
         WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
         AND tactic.TACTIC_DECISN_VRB_INFO IS NOT NULL
@@ -21,6 +20,12 @@ proc sql;
 quit;
 
 /* STEP 2: Sample the actual content */
+/* Add length calculation in SAS */
+data raw_tactic_info;
+    set raw_tactic_info;
+    info_length = length(TACTIC_DECISN_VRB_INFO);
+run;
+
 proc print data=raw_tactic_info (obs=10);
     title "DIAGNOSTIC: Sample of TACTIC_DECISN_VRB_INFO Content";
     var tactic_id clnt_no info_length TACTIC_DECISN_VRB_INFO;
