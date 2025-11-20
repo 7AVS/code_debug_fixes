@@ -20,9 +20,46 @@ except UnicodeDecodeError:
     df = pd.read_csv('application_branch_postal_all.csv', encoding='latin-1')
     print(f"Loaded {len(df)} records")
 
-# Initialize Canadian postal code geocoder
-print("Initializing geocoder...")
-nomi = pgeocode.Nominatim('CA')
+# Create offline postal code lookup table for major Canadian cities
+print("Creating offline postal code database...")
+postal_coords = {
+    # Ontario
+    'K1A': [45.4215, -75.6972],  # Ottawa
+    'M5V': [43.6426, -79.3871],  # Toronto Downtown
+    'M4E': [43.6784, -79.2951],  # Toronto East
+    'M6K': [43.6368, -79.4285],  # Toronto West
+    'L5B': [43.5890, -79.6441],  # Mississauga
+    'L4C': [43.8561, -79.3370],  # Richmond Hill
+    # Quebec
+    'H3A': [45.5017, -73.5673],  # Montreal Downtown
+    'H2X': [45.5088, -73.5878],  # Montreal Plateau
+    'G1R': [46.8139, -71.2080],  # Quebec City
+    # Alberta  
+    'T2P': [51.0447, -114.0719], # Calgary Downtown
+    'T5J': [53.5461, -113.4938], # Edmonton Downtown
+    # British Columbia
+    'V6B': [49.2827, -123.1207], # Vancouver Downtown
+    'V8W': [48.4284, -123.3656], # Victoria
+    # Add more major postal code prefixes as needed
+}
+
+def get_coordinates_offline(postal_code):
+    """Get coordinates from offline lookup table"""
+    if pd.isna(postal_code):
+        return pd.Series([np.nan, np.nan])
+    
+    # Clean postal code
+    postal_clean = str(postal_code).upper().strip().replace(' ', '')
+    if len(postal_clean) >= 3:
+        prefix = postal_clean[:3]
+        if prefix in postal_coords:
+            coords = postal_coords[prefix]
+            return pd.Series([coords[0], coords[1]])
+    
+    # If not found, return NaN
+    return pd.Series([np.nan, np.nan])
+
+print("Using offline postal code lookup...")
 
 # Clean postal codes and add coordinates
 def clean_postal_code(postal):
@@ -37,15 +74,9 @@ def clean_postal_code(postal):
 print("Geocoding postal codes...")
 df['POSTAL_CLEAN'] = df['BRANCH_POSTAL_CD'].apply(clean_postal_code)
 
-# Geocode postal codes
-def get_coordinates(postal):
-    try:
-        result = nomi.query_postal_code(postal)
-        return pd.Series([result.latitude, result.longitude])
-    except:
-        return pd.Series([np.nan, np.nan])
+# Removed online geocoding function - using offline lookup only
 
-df[['latitude', 'longitude']] = df['POSTAL_CLEAN'].apply(get_coordinates)
+df[['latitude', 'longitude']] = df['POSTAL_CLEAN'].apply(get_coordinates_offline)
 
 # Remove records with invalid coordinates
 df_geo = df.dropna(subset=['latitude', 'longitude']).copy()
