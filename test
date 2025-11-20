@@ -11,8 +11,14 @@ warnings.filterwarnings('ignore')
 
 # Load the data
 print("Loading data...")
-df = pd.read_csv('application_branch_postal_all.csv')
-print(f"Loaded {len(df)} records")
+# Handle encoding issues
+try:
+    df = pd.read_csv('application_branch_postal_all.csv', encoding='utf-8')
+    print(f"Loaded {len(df)} records")
+except UnicodeDecodeError:
+    print("UTF-8 failed, trying latin-1 encoding...")
+    df = pd.read_csv('application_branch_postal_all.csv', encoding='latin-1')
+    print(f"Loaded {len(df)} records")
 
 # Initialize Canadian postal code geocoder
 print("Initializing geocoder...")
