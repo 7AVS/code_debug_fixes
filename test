@@ -157,6 +157,8 @@ if len(student_segments) > 0:
                                alpha=0.6, cmap='plasma')
             ax.set_title(f'{segment} (n={segment_data["TOTAL_APPLICATIONS"].sum():.0f})')
             plt.colorbar(scatter, ax=ax, label='Applications')
+        else:
+            ax.set_title(f'{segment} (No Data)')
         
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
