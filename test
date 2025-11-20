@@ -1,190 +1,218 @@
-/* ========================================================================= */
-/* STUDENT RCL VINTAGE CURVES - V2 EXACT COPY WITH CONSOLIDATION           */
-/* Purpose: EXACT same logic as original, just reduce bloat                 */
-/* ========================================================================= */
+import pandas as pd
+import pgeocode
+import matplotlib.pyplot as plt
+import seaborn as sns
+import folium
+from folium.plugins import HeatMap
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+import warnings
+warnings.filterwarnings('ignore')
 
-/* CHUNK 1: EXACT TACTIC DETAILS COPY - Same hardcoded parsing, fixed tactic IDs */
-proc sql;
-    %connectsql;
-    create table tactic_details as
-    select * from connection to teradata (
-        SELECT DISTINCT
-            tactic.clnt_no,
-            tactic.TACTIC_ID,
-            tactic.TREATMT_STRT_DT,
-            tactic.TREATMT_END_DT,
-            tactic.TST_GRP_CD,
-            tactic.RPT_GRP_CD,
-            tactic.TREATMT_MN,
-            PER.EMPL_STS_CD,
-            PER.OCCPT_CD,
-            
-            /* Parse student segment flags from TACTIC_DECISN_VRB_INFO - EXACT ORIGINAL LOGIC */
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+13, 1))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student NG')+12, 1))
-                ELSE NULL
-            END AS STUDENT_NG_IND,
-            
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student SB')+12, 1))
-                ELSE NULL
-            END AS STUDENT_SB_IND,
-            
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Student IR')+12, 1))
-                ELSE NULL
-            END AS STUDENT_IR_IND,
-            
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) = 'N/A'
-                THEN 'N/A'
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) NE 'N/A'
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                AND TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 3)) NE 'N/A'
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'Grad Date:')+11, 10))
-                ELSE NULL
-            END AS GRAD_DATE,
-            
-            /* Communication channel indicators - EXACT ORIGINAL LOGIC */
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'EM Ind:')+8, 1))
-                ELSE NULL
-            END AS EM_IND,
-            
-            CASE
-                WHEN TACTIC.tactic_id IN ('2024196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1))
-                WHEN TACTIC.tactic_id IN ('2025196SLC')
-                THEN TRIM(SUBSTR(tactic.TACTIC_DECISN_VRB_INFO, INDEX(tactic.TACTIC_DECISN_VRB_INFO, 'OLB Ind:')+9, 1))
-                ELSE NULL
-            END AS OLB_IND,
-            
-            /* Full channel assignment - EXACT ORIGINAL LOGIC */
-            CASE
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2022 AND RPT_GRP_CD IN ('PSLCRG01', 'PSLCRG02') THEN 'EM'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG02') THEN 'EM'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG01') THEN 'IM_MB'
-                WHEN YEAR(TACTIC.TREATMT_STRT_DT) = 2024 AND RPT_GRP_CD IN ('PSLCRG03') THEN 'IM_MB_EM'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC001A' THEN 'IM_MB'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC002A' THEN 'EM'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC003A' THEN 'IM_EM_MB'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = 'PSLCNMAA' THEN 'CONTROL'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '1SLC004A' THEN 'IM_MB'
-                WHEN TACTIC.tactic_id = '2025196SLC' AND TACTIC.TREATMT_MN = '18LC005A' THEN 'IM_EM_MB'
-                WHEN TACTIC.tactic_id = '2025227SLC' THEN 'EM'
-                ELSE 'OTHER'
-            END AS FULL_CHANNEL
-            
-        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS tactic
-        LEFT JOIN (
-            SELECT distinct
-                CLNT_NO,
-                SNAP_DT,
-                OCCPT_CD,
-                OCCPT_CD_DESC_EN,
-                empl_sts_CD
-            FROM DDWV01.PERS_dly
-            where SNAP_DT = '2025-10-31'
-        ) as PER
-        on tactic.CLNT_NO = PER.CLNT_NO
-        AND PER.SNAP_DT = '2025-10-31'
-        WHERE TACTIC.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        order by TACTIC.CLNT_NO
-    );
-quit;
+# Load the data
+print("Loading data...")
+df = pd.read_csv('application_branch_postal_all.csv')
+print(f"Loaded {len(df)} records")
 
-/* Simple validation - same as original */
-proc sql;
-    title "Tactic Details Validation";
-    select 
-        TACTIC_ID,
-        TST_GRP_CD,
-        count(distinct CLNT_NO) as client_count
-    from tactic_details
-    group by TACTIC_ID, TST_GRP_CD
-    order by TACTIC_ID, TST_GRP_CD;
-quit;
+# Initialize Canadian postal code geocoder
+print("Initializing geocoder...")
+nomi = pgeocode.Nominatim('CA')
 
-%put CHUNK 1 COMPLETE - EXACT TACTIC DETAILS WITH CORRECTED TACTIC IDS;
+# Clean postal codes and add coordinates
+def clean_postal_code(postal):
+    """Clean and standardize Canadian postal codes"""
+    if pd.isna(postal):
+        return None
+    postal = str(postal).upper().strip().replace(' ', '')
+    if len(postal) == 6:
+        return f"{postal[:3]} {postal[3:]}"
+    return postal
 
-/* ========================================================================= */
-/* CHUNK 2: APPOINTMENTS SUCCESS - ACTIVITY-ONLY TABLE                     */
-/* Contains ONLY clients who had appointment activity (booked or kept)     */
-/* ========================================================================= */
+print("Geocoding postal codes...")
+df['POSTAL_CLEAN'] = df['BRANCH_POSTAL_CD'].apply(clean_postal_code)
 
-proc sql;
-    %connectsql;
-    create table appointments_success as
-    select * from connection to teradata (
-        SELECT
-            camp.clnt_no,
-            camp.tactic_id,
-            camp.tst_grp_cd,
-            camp.rpt_grp_cd,
-            camp.TREATMT_MN,
-            camp.treatmt_strt_dt as campaign_start,
-            camp.treatmt_end_dt as campaign_end,
-            
-            /* Appointment success metrics - aggregated to client level */
-            max(case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt then 1 else 0 end) as APPT_BOOKED,
-            max(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then 1 else 0 end) as APPT_KEPT,
-            sum(case when evt.strt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt then 1 else 0 end) as num_appts_booked,
-            sum(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then 1 else 0 end) as num_appts_kept,
-            min(evt.strt_dt) as first_booked_date,
-            max(evt.strt_dt) as last_booked_date,
-            min(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then evt.evnt_dt else null end) as first_kept_date,
-            max(case when evt.evnt_dt between camp.treatmt_strt_dt and camp.treatmt_end_dt and rslt.sub_rslt_typ_cd >= 1 then evt.evnt_dt else null end) as last_kept_date
-            
-        FROM DG6V01.TACTIC_EVNT_IP_AR_HIST AS camp
-        INNER JOIN DG6V01.intcn_cntct_evnt_dly_d AS evt
-            ON evt.clnt_no = camp.clnt_no
-            AND evt.sys_src_id = 551
-            AND evt.cntct_evnt_typ = 1
-            AND evt.cntct_mthd_typ IN (1,2,9)
-            AND (
-                evt.strt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
-                OR evt.evnt_dt BETWEEN camp.treatmt_strt_dt AND camp.treatmt_end_dt
-            )
-        LEFT JOIN DG6V01.intcn_cntct_evnt_rslt_dly AS rslt
-            ON rslt.css_event_id = evt.css_event_id
-            AND rslt.sys_src_id = evt.sys_src_id
-            AND rslt.clnt_no = evt.clnt_no
-            AND rslt.snap_dt = date '2025-11-06'
-        WHERE camp.tactic_id IN ('2024196SLC', '2025196SLC', '2025227SLC')
-        GROUP BY camp.clnt_no, camp.tactic_id, camp.tst_grp_cd, camp.rpt_grp_cd, camp.TREATMT_MN, camp.treatmt_strt_dt, camp.treatmt_end_dt
-        ORDER BY camp.clnt_no, camp.tactic_id
-    );
-quit;
+# Geocode postal codes
+def get_coordinates(postal):
+    try:
+        result = nomi.query_postal_code(postal)
+        return pd.Series([result.latitude, result.longitude])
+    except:
+        return pd.Series([np.nan, np.nan])
 
-/* Validation */
-proc sql;
-    title "CHUNK 2 - Appointments Success (Activity Only)";
-    select 
-        tactic_id,
-        tst_grp_cd,
-        count(distinct clnt_no) as clients_with_appointments,
-        sum(APPT_BOOKED) as clients_booked,
-        sum(APPT_KEPT) as clients_kept,
-        sum(num_appts_booked) as total_appts_booked,
-        sum(num_appts_kept) as total_appts_kept
-    from appointments_success
-    group by tactic_id, tst_grp_cd
-    order by tactic_id, tst_grp_cd;
-quit;
+df[['latitude', 'longitude']] = df['POSTAL_CLEAN'].apply(get_coordinates)
 
-%put CHUNK 2 COMPLETE - APPOINTMENTS SUCCESS (ACTIVITY ONLY);
+# Remove records with invalid coordinates
+df_geo = df.dropna(subset=['latitude', 'longitude']).copy()
+print(f"Successfully geocoded {len(df_geo)} out of {len(df)} records")
+
+# Create total applications column
+df_geo['TOTAL_APPLICATIONS'] = (df_geo['OPENED_IND'] + df_geo['APPROVED_IND'] + 
+                               df_geo['CANCELLED_IND'] + df_geo['PENDING_IND'])
+
+# 1. BASIC HEAT MAP - Total Applications
+print("Creating basic heat map...")
+def create_basic_heatmap(data, lat_col='latitude', lon_col='longitude', 
+                        weight_col='TOTAL_APPLICATIONS', title='Application Heat Map'):
+    
+    # Center map on Canada
+    center_lat = data[lat_col].mean()
+    center_lon = data[lon_col].mean()
+    
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=6)
+    
+    # Prepare heat map data
+    heat_data = [[row[lat_col], row[lon_col], row[weight_col]] 
+                 for idx, row in data.iterrows() if row[weight_col] > 0]
+    
+    # Add heat map
+    HeatMap(heat_data, radius=15, blur=10, max_zoom=18).add_to(m)
+    
+    # Save map
+    filename = f"{title.lower().replace(' ', '_')}.html"
+    m.save(filename)
+    print(f"Saved: {filename}")
+    
+    return m
+
+# Create basic heat map
+basic_map = create_basic_heatmap(df_geo, title='Total Applications Heat Map')
+
+# 2. GRID LAYOUT FOR POWERPOINT - Application Status Breakdown
+print("Creating application status grid...")
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+fig.suptitle('Application Status Heat Maps by Geographic Location', fontsize=16, y=0.95)
+
+status_cols = ['OPENED_IND', 'APPROVED_IND', 'CANCELLED_IND', 'PENDING_IND']
+status_titles = ['Opened Applications', 'Approved Applications', 
+                'Cancelled Applications', 'Pending Applications']
+
+for i, (col, title) in enumerate(zip(status_cols, status_titles)):
+    ax = axes[i//2, i%2]
+    
+    # Filter out zero values for cleaner visualization
+    data_subset = df_geo[df_geo[col] > 0]
+    
+    if len(data_subset) > 0:
+        scatter = ax.scatter(data_subset['longitude'], data_subset['latitude'], 
+                           c=data_subset[col], s=data_subset[col]*3, 
+                           alpha=0.6, cmap='YlOrRd')
+        ax.set_title(f'{title} (n={data_subset[col].sum():.0f})')
+        plt.colorbar(scatter, ax=ax, label='Count')
+    else:
+        ax.set_title(f'{title} (No Data)')
+    
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('application_status_heatmap_grid.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 3. TEST GROUP COMPARISON
+print("Creating test group comparison...")
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+fig.suptitle('Test vs Control Group Geographic Distribution', fontsize=16)
+
+test_groups = df_geo['TEST_GROUP'].unique()
+colors = ['red', 'blue', 'green', 'orange', 'purple']
+
+for i, group in enumerate(test_groups[:2]):  # Show first 2 groups
+    ax = axes[i]
+    group_data = df_geo[df_geo['TEST_GROUP'] == group]
+    
+    if len(group_data) > 0:
+        scatter = ax.scatter(group_data['longitude'], group_data['latitude'], 
+                           c=group_data['TOTAL_APPLICATIONS'], 
+                           s=group_data['TOTAL_APPLICATIONS']*2, 
+                           alpha=0.6, cmap='viridis')
+        ax.set_title(f'{group} (n={len(group_data)} locations)')
+        plt.colorbar(scatter, ax=ax, label='Total Applications')
+    else:
+        ax.set_title(f'{group} (No Data)')
+    
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('test_control_comparison.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 4. STUDENT SEGMENT ANALYSIS
+print("Creating student segment analysis...")
+student_segments = df_geo['STUDENT_SEGMENT'].value_counts().head(4)
+if len(student_segments) > 0:
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Applications by Student Segment - Geographic Distribution', fontsize=16)
+    
+    for i, segment in enumerate(student_segments.index):
+        ax = axes[i//2, i%2]
+        segment_data = df_geo[df_geo['STUDENT_SEGMENT'] == segment]
+        
+        if len(segment_data) > 0:
+            scatter = ax.scatter(segment_data['longitude'], segment_data['latitude'], 
+                               c=segment_data['TOTAL_APPLICATIONS'], 
+                               s=segment_data['TOTAL_APPLICATIONS']*3, 
+                               alpha=0.6, cmap='plasma')
+            ax.set_title(f'{segment} (n={segment_data["TOTAL_APPLICATIONS"].sum():.0f})')
+            plt.colorbar(scatter, ax=ax, label='Applications')
+        
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('student_segment_heatmaps.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+# 5. SUMMARY STATISTICS
+print("\n" + "="*50)
+print("SUMMARY STATISTICS")
+print("="*50)
+
+print(f"\nTotal Records: {len(df)}")
+print(f"Successfully Geocoded: {len(df_geo)} ({len(df_geo)/len(df)*100:.1f}%)")
+print(f"Total Applications: {df_geo['TOTAL_APPLICATIONS'].sum():,}")
+
+print(f"\nApplication Status Breakdown:")
+for col in ['OPENED_IND', 'APPROVED_IND', 'CANCELLED_IND', 'PENDING_IND']:
+    print(f"  {col}: {df_geo[col].sum():,}")
+
+print(f"\nTest Group Distribution:")
+print(df_geo['TEST_GROUP'].value_counts())
+
+print(f"\nTactic ID Distribution:")
+print(df_geo['TACTIC_ID'].value_counts())
+
+print(f"\nStudent Segment Distribution:")
+print(df_geo['STUDENT_SEGMENT'].value_counts().head())
+
+print(f"\nTop 10 Postal Codes by Application Volume:")
+top_postal = df_geo.groupby('BRANCH_POSTAL_CD')['TOTAL_APPLICATIONS'].sum().sort_values(ascending=False).head(10)
+print(top_postal)
+
+# 6. DATA QUALITY CHECK
+print(f"\n" + "="*30)
+print("DATA QUALITY REPORT")
+print("="*30)
+
+failed_geocoding = df[df['BRANCH_POSTAL_CD'].notna() & 
+                     ~df['BRANCH_POSTAL_CD'].isin(df_geo['BRANCH_POSTAL_CD'])]
+
+if len(failed_geocoding) > 0:
+    print(f"\nPostal codes that failed geocoding ({len(failed_geocoding)}):")
+    print(failed_geocoding['BRANCH_POSTAL_CD'].value_counts().head(10))
+
+print(f"\nCoordinate ranges:")
+print(f"  Latitude: {df_geo['latitude'].min():.2f} to {df_geo['latitude'].max():.2f}")
+print(f"  Longitude: {df_geo['longitude'].min():.2f} to {df_geo['longitude'].max():.2f}")
+
+print("\n" + "="*50)
+print("ANALYSIS COMPLETE!")
+print("="*50)
+print("\nFiles created:")
+print("- total_applications_heat_map.html (interactive)")
+print("- application_status_heatmap_grid.png (PowerPoint ready)")
+print("- test_control_comparison.png (PowerPoint ready)")  
+print("- student_segment_heatmaps.png (PowerPoint ready)")
