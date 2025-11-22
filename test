@@ -1,257 +1,289 @@
-import pandas as pd
-import pgeocode
-import matplotlib.pyplot as plt
-import seaborn as sns
-import folium
-from folium.plugins import HeatMap
-import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
-import warnings
-warnings.filterwarnings('ignore')
+/* ========================================================================= */
+/* TARGETED VINTAGE SUMMARY - WIDE FORMAT TABLE                            */
+/* Purpose: Generate wide-format analytical table for Targeted Component    */
+/* Input: master_client_data (Table with columns from metadata_fields.md)   */
+/* Output: vintage_summary_wide                                             */
 
-# Load the data
-print("Loading data...")
-# Handle encoding issues
-try:
-    df = pd.read_csv('application_branch_postal_all.csv', encoding='utf-8')
-    print(f"Loaded {len(df)} records")
-except UnicodeDecodeError:
-    print("UTF-8 failed, trying latin-1 encoding...")
-    df = pd.read_csv('application_branch_postal_all.csv', encoding='latin-1')
-    print(f"Loaded {len(df)} records")
-
-# Create offline postal code lookup table for major Canadian cities
-print("Creating offline postal code database...")
-postal_coords = {
-    # Ontario
-    'K1A': [45.4215, -75.6972],  # Ottawa
-    'M5V': [43.6426, -79.3871],  # Toronto Downtown
-    'M4E': [43.6784, -79.2951],  # Toronto East
-    'M6K': [43.6368, -79.4285],  # Toronto West
-    'L5B': [43.5890, -79.6441],  # Mississauga
-    'L4C': [43.8561, -79.3370],  # Richmond Hill
-    # Quebec
-    'H3A': [45.5017, -73.5673],  # Montreal Downtown
-    'H2X': [45.5088, -73.5878],  # Montreal Plateau
-    'G1R': [46.8139, -71.2080],  # Quebec City
-    # Alberta  
-    'T2P': [51.0447, -114.0719], # Calgary Downtown
-    'T5J': [53.5461, -113.4938], # Edmonton Downtown
-    # British Columbia
-    'V6B': [49.2827, -123.1207], # Vancouver Downtown
-    'V8W': [48.4284, -123.3656], # Victoria
-    # Add more major postal code prefixes as needed
-}
-
-def get_coordinates_offline(postal_code):
-    """Get coordinates from offline lookup table"""
-    if pd.isna(postal_code):
-        return pd.Series([np.nan, np.nan])
-    
-    # Clean postal code
-    postal_clean = str(postal_code).upper().strip().replace(' ', '')
-    if len(postal_clean) >= 3:
-        prefix = postal_clean[:3]
-        if prefix in postal_coords:
-            coords = postal_coords[prefix]
-            return pd.Series([coords[0], coords[1]])
-    
-    # If not found, return NaN
-    return pd.Series([np.nan, np.nan])
-
-print("Using offline postal code lookup...")
-
-# Clean postal codes and add coordinates
-def clean_postal_code(postal):
-    """Clean and standardize Canadian postal codes"""
-    if pd.isna(postal):
-        return None
-    postal = str(postal).upper().strip().replace(' ', '')
-    if len(postal) == 6:
-        return f"{postal[:3]} {postal[3:]}"
-    return postal
-
-print("Geocoding postal codes...")
-df['POSTAL_CLEAN'] = df['BRANCH_POSTAL_CD'].apply(clean_postal_code)
-
-# Removed online geocoding function - using offline lookup only
-
-df[['latitude', 'longitude']] = df['POSTAL_CLEAN'].apply(get_coordinates_offline)
-
-# Remove records with invalid coordinates
-df_geo = df.dropna(subset=['latitude', 'longitude']).copy()
-print(f"Successfully geocoded {len(df_geo)} out of {len(df)} records")
-
-# Create total applications column
-df_geo['TOTAL_APPLICATIONS'] = (df_geo['OPENED_IND'] + df_geo['APPROVED_IND'] + 
-                               df_geo['CANCELLED_IND'] + df_geo['PENDING_IND'])
-
-# 1. BASIC HEAT MAP - Total Applications
-print("Creating basic heat map...")
-def create_basic_heatmap(data, lat_col='latitude', lon_col='longitude', 
-                        weight_col='TOTAL_APPLICATIONS', title='Application Heat Map'):
-    
-    # Center map on Canada
-    center_lat = data[lat_col].mean()
-    center_lon = data[lon_col].mean()
-    
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=6)
-    
-    # Prepare heat map data
-    heat_data = [[row[lat_col], row[lon_col], row[weight_col]] 
-                 for idx, row in data.iterrows() if row[weight_col] > 0]
-    
-    # Add heat map
-    HeatMap(heat_data, radius=15, blur=10, max_zoom=18).add_to(m)
-    
-    # Save map
-    filename = f"{title.lower().replace(' ', '_')}.html"
-    m.save(filename)
-    print(f"Saved: {filename}")
-    
-    return m
-
-# Create basic heat map
-basic_map = create_basic_heatmap(df_geo, title='Total Applications Heat Map')
-
-# 2. GRID LAYOUT FOR POWERPOINT - Application Status Breakdown
-print("Creating application status grid...")
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Application Status Heat Maps by Geographic Location', fontsize=16, y=0.95)
-
-status_cols = ['OPENED_IND', 'APPROVED_IND', 'CANCELLED_IND', 'PENDING_IND']
-status_titles = ['Opened Applications', 'Approved Applications', 
-                'Cancelled Applications', 'Pending Applications']
-
-for i, (col, title) in enumerate(zip(status_cols, status_titles)):
-    ax = axes[i//2, i%2]
-    
-    # Filter out zero values for cleaner visualization
-    data_subset = df_geo[df_geo[col] > 0]
-    
-    if len(data_subset) > 0:
-        scatter = ax.scatter(data_subset['longitude'], data_subset['latitude'], 
-                           c=data_subset[col], s=data_subset[col]*3, 
-                           alpha=0.6, cmap='YlOrRd')
-        ax.set_title(f'{title} (n={data_subset[col].sum():.0f})')
-        plt.colorbar(scatter, ax=ax, label='Count')
-    else:
-        ax.set_title(f'{title} (No Data)')
-    
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    ax.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.savefig('application_status_heatmap_grid.png', dpi=300, bbox_inches='tight')
-plt.show()
-
-# 3. TEST GROUP COMPARISON
-print("Creating test group comparison...")
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-fig.suptitle('Test vs Control Group Geographic Distribution', fontsize=16)
-
-test_groups = df_geo['TEST_GROUP'].unique()
-colors = ['red', 'blue', 'green', 'orange', 'purple']
-
-for i, group in enumerate(test_groups[:2]):  # Show first 2 groups
-    ax = axes[i]
-    group_data = df_geo[df_geo['TEST_GROUP'] == group]
-    
-    if len(group_data) > 0:
-        scatter = ax.scatter(group_data['longitude'], group_data['latitude'], 
-                           c=group_data['TOTAL_APPLICATIONS'], 
-                           s=group_data['TOTAL_APPLICATIONS']*2, 
-                           alpha=0.6, cmap='viridis')
-        ax.set_title(f'{group} (n={len(group_data)} locations)')
-        plt.colorbar(scatter, ax=ax, label='Total Applications')
-    else:
-        ax.set_title(f'{group} (No Data)')
-    
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    ax.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.savefig('test_control_comparison.png', dpi=300, bbox_inches='tight')
-plt.show()
-
-# 4. STUDENT SEGMENT ANALYSIS
-print("Creating student segment analysis...")
-student_segments = df_geo['STUDENT_SEGMENT'].value_counts().head(4)
-if len(student_segments) > 0:
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Applications by Student Segment - Geographic Distribution', fontsize=16)
-    
-    for i, segment in enumerate(student_segments.index):
-        ax = axes[i//2, i%2]
-        segment_data = df_geo[df_geo['STUDENT_SEGMENT'] == segment]
+/* ========================================================================= */
+PROC SQL;
+    CREATE TABLE vintage_summary_wide AS 
+    SELECT
+        /* ----------------------------------------------------------------- */
+        /* COHORT & GROUP DEFINITIONS                                        */
+        /* ----------------------------------------------------------------- */
+        CASE 
+            WHEN tactic_id='2024196SLC' THEN '2024' 
+            WHEN tactic_id='2025196SLC' THEN '2025_First' 
+            WHEN tactic_id='2025227SLC' THEN '2025_Reminder' 
+            ELSE 'Unknown' 
+        END AS Cohort,
         
-        if len(segment_data) > 0:
-            scatter = ax.scatter(segment_data['longitude'], segment_data['latitude'], 
-                               c=segment_data['TOTAL_APPLICATIONS'], 
-                               s=segment_data['TOTAL_APPLICATIONS']*3, 
-                               alpha=0.6, cmap='plasma')
-            ax.set_title(f'{segment} (n={segment_data["TOTAL_APPLICATIONS"].sum():.0f})')
-            plt.colorbar(scatter, ax=ax, label='Applications')
-        else:
-            ax.set_title(f'{segment} (No Data)')
+        CASE 
+            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG1' THEN 'Action_A'
+            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG4' THEN 'Action_B'
+            WHEN tactic_id='2025196SLC' AND tst_grp_cd IN ('TG1', 'TG4') THEN 'Action_Combined'
+            WHEN tst_grp_cd='TG7' THEN 'Control'
+            WHEN tst_grp_cd IN ('TG1', 'TG4') THEN 'Action'
+            ELSE tst_grp_cd 
+        END AS Test_Group,
         
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
-        ax.grid(True, alpha=0.3)
+        period.period_day AS Period,
+        
+        /* ----------------------------------------------------------------- */
+        /* ADDITIONAL CATEGORIES                                             */
+        /* ----------------------------------------------------------------- */
+        TREATMT_END_DT,
+        TST_GRP_CD AS Original_Test_Group,
+        GRAD_DATE,
+        also_in_reminder,
+        
+        /* Placeholders for Missing Fields */
+        . AS NTB,
+        '' AS purpuse LENGTH=20,
+        '' AS sub_purpose LENGTH=20,
+        
+        /* ----------------------------------------------------------------- */
+        /* METRICS (COLUMNS)                                                 */
+        /* ----------------------------------------------------------------- */
+        
+        /* --- APPOINTMENTS --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN APPT_KEPT
+                WHEN first_kept_date <= (TREATMT_STRT_DT + period.period_day) THEN APPT_KEPT
+                ELSE 0 
+            END
+        ) AS Sum_APPT_KEPT,
+        
+        /* --- APPLICATIONS (STUDENT) --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN loc_student
+                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN loc_student
+                ELSE 0 
+            END
+        ) AS Sum_APP_TOTAL_STUDENT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN st_student_opn
+                WHEN first_opened_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_opn
+                ELSE 0 
+            END
+        ) AS Sum_APP_OPEN_STUDENT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN st_student_nopn
+                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_nopn
+                ELSE 0 
+            END
+        ) AS Sum_APP_CANCEL_STUDENT,
+        
+        /* --- APPLICATIONS (OTHER) --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN total_apps_other
+                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN total_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_TOTAL_OTHER,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN opened_apps_other
+                WHEN first_opened_date_other <= (TREATMT_STRT_DT + period.period_day) THEN opened_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_OPEN_OTHER,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN cancelled_apps_other
+                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN cancelled_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_CANCEL_OTHER,
+        
+        /* --- EMAIL METRICS --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
+                WHEN first_open_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_OPENED,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
+                WHEN first_click_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_CLICKED,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN EMAIL_UNSUBSCRIBED
+                WHEN TREATMT_END_DT <= (TREATMT_STRT_DT + period.period_day) THEN EMAIL_UNSUBSCRIBED
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_UNSUBSCRIBED,
+        
+        /* --- FULFILLMENT METRICS --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=200 THEN 1 ELSE 0 END)
+                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=200 THEN 1
+                ELSE 0 
+            END
+        ) AS Sum_FULFILL_200,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=575 THEN 1 ELSE 0 END)
+                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=575 THEN 1
+                ELSE 0 
+            END
+        ) AS Sum_FULFILL_575,
+        
+        COUNT(*) AS Base_Count
+        
+    FROM master_client_data 
+    CROSS JOIN (
+        SELECT level - 1 AS period_day 
+        FROM dual 
+        CONNECT BY level <= 121
+    ) AS period 
+    WHERE period.period_day BETWEEN 0 AND 120 
+    GROUP BY CALCULATED Cohort, CALCULATED Test_Group, period.period_day, 
+             TREATMT_END_DT, TST_GRP_CD, GRAD_DATE, also_in_reminder
     
-    plt.tight_layout()
-    plt.savefig('student_segment_heatmaps.png', dpi=300, bbox_inches='tight')
-    plt.show()
-
-# 5. SUMMARY STATISTICS
-print("\n" + "="*50)
-print("SUMMARY STATISTICS")
-print("="*50)
-
-print(f"\nTotal Records: {len(df)}")
-print(f"Successfully Geocoded: {len(df_geo)} ({len(df_geo)/len(df)*100:.1f}%)")
-print(f"Total Applications: {df_geo['TOTAL_APPLICATIONS'].sum():,}")
-
-print(f"\nApplication Status Breakdown:")
-for col in ['OPENED_IND', 'APPROVED_IND', 'CANCELLED_IND', 'PENDING_IND']:
-    print(f"  {col}: {df_geo[col].sum():,}")
-
-print(f"\nTest Group Distribution:")
-print(df_geo['TEST_GROUP'].value_counts())
-
-print(f"\nTactic ID Distribution:")
-print(df_geo['TACTIC_ID'].value_counts())
-
-print(f"\nStudent Segment Distribution:")
-print(df_geo['STUDENT_SEGMENT'].value_counts().head())
-
-print(f"\nTop 10 Postal Codes by Application Volume:")
-top_postal = df_geo.groupby('BRANCH_POSTAL_CD')['TOTAL_APPLICATIONS'].sum().sort_values(ascending=False).head(10)
-print(top_postal)
-
-# 6. DATA QUALITY CHECK
-print(f"\n" + "="*30)
-print("DATA QUALITY REPORT")
-print("="*30)
-
-failed_geocoding = df[df['BRANCH_POSTAL_CD'].notna() & 
-                     ~df['BRANCH_POSTAL_CD'].isin(df_geo['BRANCH_POSTAL_CD'])]
-
-if len(failed_geocoding) > 0:
-    print(f"\nPostal codes that failed geocoding ({len(failed_geocoding)}):")
-    print(failed_geocoding['BRANCH_POSTAL_CD'].value_counts().head(10))
-
-print(f"\nCoordinate ranges:")
-print(f"  Latitude: {df_geo['latitude'].min():.2f} to {df_geo['latitude'].max():.2f}")
-print(f"  Longitude: {df_geo['longitude'].min():.2f} to {df_geo['longitude'].max():.2f}")
-
-print("\n" + "="*50)
-print("ANALYSIS COMPLETE!")
-print("="*50)
-print("\nFiles created:")
-print("- total_applications_heat_map.html (interactive)")
-print("- application_status_heatmap_grid.png (PowerPoint ready)")
-print("- test_control_comparison.png (PowerPoint ready)")  
-print("- student_segment_heatmaps.png (PowerPoint ready)")
+    /* ----------------------------------------------------------------- */
+    /* ACTION COMBINED LOGIC (UNION ALL)                                 */
+    /* ----------------------------------------------------------------- */
+    UNION ALL 
+    SELECT 
+        '2025_First' AS Cohort,
+        'Action_Combined' AS Test_Group,
+        period.period_day AS Period,
+        TREATMT_END_DT,
+        TST_GRP_CD AS Original_Test_Group,
+        GRAD_DATE,
+        also_in_reminder,
+        . AS NTB,
+        '' AS purpuse,
+        '' AS sub_purpose,
+        
+        /* --- REPEAT METRIC SUMS --- */
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN APPT_KEPT
+                WHEN first_kept_date <= (TREATMT_STRT_DT + period.period_day) THEN APPT_KEPT
+                ELSE 0 
+            END
+        ) AS Sum_APPT_KEPT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN loc_student
+                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN loc_student
+                ELSE 0 
+            END
+        ) AS Sum_APP_TOTAL_STUDENT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN st_student_opn
+                WHEN first_opened_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_opn
+                ELSE 0 
+            END
+        ) AS Sum_APP_OPEN_STUDENT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN st_student_nopn
+                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_nopn
+                ELSE 0 
+            END
+        ) AS Sum_APP_CANCEL_STUDENT,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN total_apps_other
+                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN total_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_TOTAL_OTHER,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN opened_apps_other
+                WHEN first_opened_date_other <= (TREATMT_STRT_DT + period.period_day) THEN opened_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_OPEN_OTHER,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN cancelled_apps_other
+                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN cancelled_apps_other
+                ELSE 0 
+            END
+        ) AS Sum_APP_CANCEL_OTHER,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
+                WHEN first_open_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_OPENED,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
+                WHEN first_click_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_CLICKED,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN EMAIL_UNSUBSCRIBED
+                WHEN TREATMT_END_DT <= (TREATMT_STRT_DT + period.period_day) THEN EMAIL_UNSUBSCRIBED
+                ELSE 0 
+            END
+        ) AS Sum_EMAIL_UNSUBSCRIBED,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=200 THEN 1 ELSE 0 END)
+                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=200 THEN 1
+                ELSE 0 
+            END
+        ) AS Sum_FULFILL_200,
+        
+        SUM(
+            CASE 
+                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=575 THEN 1 ELSE 0 END)
+                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=575 THEN 1
+                ELSE 0 
+            END
+        ) AS Sum_FULFILL_575,
+        
+        COUNT(*) AS Base_Count
+        
+    FROM master_client_data 
+    CROSS JOIN (
+        SELECT level - 1 AS period_day 
+        FROM dual 
+        CONNECT BY level <= 121
+    ) AS period 
+    WHERE period.period_day BETWEEN 0 AND 120 
+        AND tactic_id='2025196SLC' 
+        AND tst_grp_cd IN ('TG1', 'TG4') 
+    GROUP BY CALCULATED Cohort, CALCULATED Test_Group, period.period_day, 
+             TREATMT_END_DT, TST_GRP_CD, GRAD_DATE, also_in_reminder 
+    ORDER BY Cohort, Test_Group, Period;
+QUIT;
