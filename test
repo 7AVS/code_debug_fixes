@@ -1,304 +1,402 @@
-/* ========================================================================= */
-/* TARGETED VINTAGE SUMMARY - WIDE FORMAT TABLE                            */
-/* Purpose: Generate wide-format analytical table for Targeted Component    */
-/* Input: master_client_data (Table with columns from metadata_fields.md)   */
-/* Output: vintage_summary_wide                                             */
+import React, { useState } from 'react';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, ReferenceLine } from 'recharts';
 
-/* ========================================================================= */
+export default function StudentRCLDashboard() {
+  const [activeTab, setActiveTab] = useState('overview');
 
-/* Create period table for days 0-120 */
-DATA period_table;
-    DO period_day = 0 TO 120;
-        OUTPUT;
-    END;
-RUN;
-PROC SQL;
-    CREATE TABLE vintage_summary_wide AS 
-    SELECT
-        /* ----------------------------------------------------------------- */
-        /* COHORT & GROUP DEFINITIONS                                        */
-        /* ----------------------------------------------------------------- */
-        CASE 
-            WHEN tactic_id='2024196SLC' THEN '2024' 
-            WHEN tactic_id='2025196SLC' THEN '2025_First' 
-            WHEN tactic_id='2025227SLC' THEN '2025_Reminder' 
-            ELSE 'Unknown' 
-        END AS Cohort,
-        
-        CASE 
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG1' THEN 'Action_A'
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG4' THEN 'Action_B'
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd IN ('TG1', 'TG4') THEN 'Action_Combined'
-            WHEN tst_grp_cd='TG7' THEN 'Control'
-            WHEN tst_grp_cd IN ('TG1', 'TG4') THEN 'Action'
-            ELSE tst_grp_cd 
-        END AS Test_Group,
-        
-        period.period_day AS Period,
-        
-        /* ----------------------------------------------------------------- */
-        /* ADDITIONAL CATEGORIES                                             */
-        /* ----------------------------------------------------------------- */
-        TREATMT_END_DT,
-        TST_GRP_CD AS Original_Test_Group,
-        GRAD_DATE,
-        also_in_reminder,
-        
-        /* Placeholders for Missing Fields */
-        . AS NTB,
-        '' AS purpose LENGTH=20,
-        '' AS sub_purpose LENGTH=20,
-        
-        /* ----------------------------------------------------------------- */
-        /* METRICS (COLUMNS)                                                 */
-        /* ----------------------------------------------------------------- */
-        
-        /* --- APPOINTMENTS --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN APPT_KEPT
-                WHEN first_kept_date <= (TREATMT_STRT_DT + period.period_day) THEN APPT_KEPT
-                ELSE 0 
-            END
-        ) AS Sum_APPT_KEPT,
-        
-        /* --- APPLICATIONS (STUDENT) --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN loc_student
-                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN loc_student
-                ELSE 0 
-            END
-        ) AS Sum_APP_TOTAL_STUDENT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN st_student_opn
-                WHEN first_opened_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_opn
-                ELSE 0 
-            END
-        ) AS Sum_APP_OPEN_STUDENT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN st_student_nopn
-                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_nopn
-                ELSE 0 
-            END
-        ) AS Sum_APP_CANCEL_STUDENT,
-        
-        /* --- APPLICATIONS (OTHER) --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN total_apps_other
-                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN total_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_TOTAL_OTHER,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN opened_apps_other
-                WHEN first_opened_date_other <= (TREATMT_STRT_DT + period.period_day) THEN opened_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_OPEN_OTHER,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN cancelled_apps_other
-                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN cancelled_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_CANCEL_OTHER,
-        
-        /* --- EMAIL METRICS --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
-                WHEN first_open_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_OPENED,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
-                WHEN first_click_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_CLICKED,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN EMAIL_UNSUBSCRIBED
-                WHEN TREATMT_END_DT <= (TREATMT_STRT_DT + period.period_day) THEN EMAIL_UNSUBSCRIBED
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_UNSUBSCRIBED,
-        
-        /* --- FULFILLMENT METRICS --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=200 THEN 1 ELSE 0 END)
-                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=200 THEN 1
-                ELSE 0 
-            END
-        ) AS Sum_FULFILL_200,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=575 THEN 1 ELSE 0 END)
-                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=575 THEN 1
-                ELSE 0 
-            END
-        ) AS Sum_FULFILL_575,
-        
-        COUNT(*) AS Base_Count
-        
-    FROM master_client_data 
-    CROSS JOIN period_table period
-    WHERE period.period_day BETWEEN 0 AND 120 
-    GROUP BY 
-        (CASE 
-            WHEN tactic_id='2024196SLC' THEN '2024' 
-            WHEN tactic_id='2025196SLC' THEN '2025_First' 
-            WHEN tactic_id='2025227SLC' THEN '2025_Reminder' 
-            ELSE 'Unknown' 
-        END),
-        (CASE 
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG1' THEN 'Action_A'
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd='TG4' THEN 'Action_B'
-            WHEN tactic_id='2025196SLC' AND tst_grp_cd IN ('TG1', 'TG4') THEN 'Action_Combined'
-            WHEN tst_grp_cd='TG7' THEN 'Control'
-            WHEN tst_grp_cd IN ('TG1', 'TG4') THEN 'Action'
-            ELSE tst_grp_cd 
-        END),
-        period.period_day, TREATMT_END_DT, TST_GRP_CD, GRAD_DATE, also_in_reminder
-    
-    /* ----------------------------------------------------------------- */
-    /* ACTION COMBINED LOGIC (UNION ALL)                                 */
-    /* ----------------------------------------------------------------- */
-    UNION ALL 
-    SELECT 
-        '2025_First' AS Cohort,
-        'Action_Combined' AS Test_Group,
-        period.period_day AS Period,
-        TREATMT_END_DT,
-        TST_GRP_CD AS Original_Test_Group,
-        GRAD_DATE,
-        also_in_reminder,
-        . AS NTB,
-        '' AS purpose,
-        '' AS sub_purpose,
-        
-        /* --- REPEAT METRIC SUMS --- */
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN APPT_KEPT
-                WHEN first_kept_date <= (TREATMT_STRT_DT + period.period_day) THEN APPT_KEPT
-                ELSE 0 
-            END
-        ) AS Sum_APPT_KEPT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN loc_student
-                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN loc_student
-                ELSE 0 
-            END
-        ) AS Sum_APP_TOTAL_STUDENT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN st_student_opn
-                WHEN first_opened_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_opn
-                ELSE 0 
-            END
-        ) AS Sum_APP_OPEN_STUDENT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN st_student_nopn
-                WHEN first_app_date_student <= (TREATMT_STRT_DT + period.period_day) THEN st_student_nopn
-                ELSE 0 
-            END
-        ) AS Sum_APP_CANCEL_STUDENT,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN total_apps_other
-                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN total_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_TOTAL_OTHER,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN opened_apps_other
-                WHEN first_opened_date_other <= (TREATMT_STRT_DT + period.period_day) THEN opened_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_OPEN_OTHER,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN cancelled_apps_other
-                WHEN first_app_date_other <= (TREATMT_STRT_DT + period.period_day) THEN cancelled_apps_other
-                ELSE 0 
-            END
-        ) AS Sum_APP_CANCEL_OTHER,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
-                WHEN first_open_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_opened > 0 THEN 1 ELSE 0 END)
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_OPENED,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
-                WHEN first_click_date <= (TREATMT_STRT_DT + period.period_day) THEN (CASE WHEN num_emails_clicked > 0 THEN 1 ELSE 0 END)
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_CLICKED,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN EMAIL_UNSUBSCRIBED
-                WHEN TREATMT_END_DT <= (TREATMT_STRT_DT + period.period_day) THEN EMAIL_UNSUBSCRIBED
-                ELSE 0 
-            END
-        ) AS Sum_EMAIL_UNSUBSCRIBED,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=200 THEN 1 ELSE 0 END)
-                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=200 THEN 1
-                ELSE 0 
-            END
-        ) AS Sum_FULFILL_200,
-        
-        SUM(
-            CASE 
-                WHEN period.period_day=0 THEN (CASE WHEN total_cash_offers > 0 AND CASH_AMT=575 THEN 1 ELSE 0 END)
-                WHEN first_offer_date <= (TREATMT_STRT_DT + period.period_day) AND CASH_AMT=575 THEN 1
-                ELSE 0 
-            END
-        ) AS Sum_FULFILL_575,
-        
-        COUNT(*) AS Base_Count
-        
-    FROM master_client_data 
-    CROSS JOIN period_table period
-    WHERE period.period_day BETWEEN 0 AND 120 
-        AND tactic_id='2025196SLC' 
-        AND tst_grp_cd IN ('TG1', 'TG4') 
-    GROUP BY 
-        '2025_First',
-        'Action_Combined',
-        period.period_day, TREATMT_END_DT, TST_GRP_CD, GRAD_DATE, also_in_reminder 
-    ORDER BY Cohort, Test_Group, Period;
-QUIT;
+  // Email Performance Data
+  const emailData = [
+    { wave: '2024', openRate: 68.55, ctr: 2.91, unsubRate: 0.046, sent: 343810 },
+    { wave: '2025 FC', openRate: 68.92, ctr: 1.69, unsubRate: 0.199, sent: 234937 },
+    { wave: '2025 Rem', openRate: 67.94, ctr: 0.97, unsubRate: 0.353, sent: 178669 },
+  ];
+
+  // Lift Data
+  const liftData = [
+    { wave: '2024', lift: 0.05, ss: false, controlRate: 0.17 },
+    { wave: '2025 First Contact', lift: 0.07, ss: true, controlRate: 0.16 },
+    { wave: '2025 Reminder', lift: 0.01, ss: false, controlRate: 0.16 },
+  ];
+
+  // Segment Distribution
+  const segmentData = [
+    { name: 'Undergraduate', value: 68.5, count: 2588, color: '#3B82F6' },
+    { name: 'Professional Graduate', value: 15.7, count: 593, color: '#10B981' },
+    { name: 'Other', value: 10.4, count: 392, color: '#F59E0B' },
+    { name: 'Medical/Dental', value: 0.1, count: 2, color: '#EF4444' },
+  ];
+
+  // Regional Data (Top 10)
+  const regionalData = [
+    { region: 'Greater Toronto', action: 287, pct: 15.3 },
+    { region: 'Ontario South West', action: 247, pct: 13.2 },
+    { region: 'Ontario North & East', action: 176, pct: 9.4 },
+    { region: 'Montreal/North Shore', action: 134, pct: 7.2 },
+    { region: 'Manitoba Branch', action: 133, pct: 7.1 },
+    { region: 'Saskatchewan Branch', action: 129, pct: 6.9 },
+    { region: 'Nova Scotia', action: 106, pct: 5.7 },
+    { region: 'Montreal/South Shore', action: 87, pct: 4.6 },
+    { region: 'New Brunswick & PEI', action: 68, pct: 3.6 },
+    { region: 'Alberta Rural', action: 65, pct: 3.5 },
+  ];
+
+  // Cross-Sell Data (2025 FC)
+  const crossSellData = [
+    { product: 'Other Products', actionPct: 53.56, controlPct: 28.18, lift: 25.38 },
+    { product: 'PBA', actionPct: 16.34, controlPct: 11.82, lift: 4.52 },
+    { product: 'Credit Apps', actionPct: 11.17, controlPct: 7.27, lift: 3.89 },
+  ];
+
+  // Key Metrics Summary
+  const keyMetrics = [
+    { label: 'First Contact Lift', value: '0.07%', status: 'success', note: 'Statistically Significant' },
+    { label: 'Reminder Lift', value: '0.01%', status: 'warning', note: 'Not Significant' },
+    { label: 'Email Open Rate', value: '68.9%', status: 'success', note: 'Stable' },
+    { label: 'Email CTR', value: '1.69%', status: 'warning', note: '42% decline from 2024' },
+    { label: 'Unsub Rate (FC)', value: '0.20%', status: 'warning', note: '4.3x increase from 2024' },
+    { label: 'Primary Segment', value: '69%', status: 'info', note: 'Undergraduate' },
+  ];
+
+  const TabButton = ({ id, label }) => (
+    <button
+      onClick={() => setActiveTab(id)}
+      className={`px-4 py-2 font-medium rounded-t-lg transition-colors ${
+        activeTab === id
+          ? 'bg-blue-600 text-white'
+          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+      }`}
+    >
+      {label}
+    </button>
+  );
+
+  const MetricCard = ({ label, value, status, note }) => {
+    const statusColors = {
+      success: 'border-green-500 bg-green-50',
+      warning: 'border-amber-500 bg-amber-50',
+      info: 'border-blue-500 bg-blue-50',
+    };
+    const textColors = {
+      success: 'text-green-700',
+      warning: 'text-amber-700',
+      info: 'text-blue-700',
+    };
+    return (
+      <div className={`p-4 rounded-lg border-l-4 ${statusColors[status]}`}>
+        <div className="text-sm text-gray-600">{label}</div>
+        <div className={`text-2xl font-bold ${textColors[status]}`}>{value}</div>
+        <div className="text-xs text-gray-500 mt-1">{note}</div>
+      </div>
+    );
+  };
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="bg-white p-3 border rounded shadow-lg">
+          <p className="font-medium">{label}</p>
+          {payload.map((entry, index) => (
+            <p key={index} style={{ color: entry.color }}>
+              {entry.name}: {entry.value}%
+            </p>
+          ))}
+        </div>
+      );
+    }
+    return null;
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+          <h1 className="text-2xl font-bold text-gray-800">Student RCL Campaign Results</h1>
+          <p className="text-gray-600 mt-1">2025 Targeted Acquisition Campaign Deep Dive</p>
+          <div className="flex gap-2 mt-4 text-sm">
+            <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full">Population: 276K</span>
+            <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full">Control: 20%</span>
+            <span className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full">Offer: $350/$575</span>
+          </div>
+        </div>
+
+        {/* Key Metrics Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+          {keyMetrics.map((metric, idx) => (
+            <MetricCard key={idx} {...metric} />
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-2 mb-0">
+          <TabButton id="overview" label="Lift Results" />
+          <TabButton id="email" label="Email Performance" />
+          <TabButton id="segments" label="Segments" />
+          <TabButton id="regional" label="Regional" />
+          <TabButton id="crosssell" label="Cross-Sell" />
+        </div>
+
+        {/* Tab Content */}
+        <div className="bg-white rounded-b-lg rounded-tr-lg shadow-md p-6">
+          
+          {/* Overview / Lift Results */}
+          {activeTab === 'overview' && (
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Campaign Lift Results</h2>
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Lift by Wave</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={liftData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" domain={[0, 0.1]} tickFormatter={(v) => `${v}%`} />
+                      <YAxis dataKey="wave" type="category" width={120} />
+                      <Tooltip formatter={(v) => `${v}%`} />
+                      <Bar dataKey="lift" fill="#3B82F6">
+                        {liftData.map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            fill={entry.ss ? '#10B981' : '#F59E0B'} 
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div className="flex gap-4 mt-2 text-sm justify-center">
+                    <span className="flex items-center gap-1">
+                      <span className="w-3 h-3 bg-green-500 rounded"></span> Statistically Significant
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-3 h-3 bg-amber-500 rounded"></span> Not Significant
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <h3 className="text-lg font-medium mb-3">Key Findings</h3>
+                  <ul className="space-y-3">
+                    <li className="flex items-start gap-2">
+                      <span className="text-green-500 mt-1">✓</span>
+                      <span><strong>First Contact works:</strong> 0.07% lift with statistical significance at 95% confidence</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-red-500 mt-1">✗</span>
+                      <span><strong>Reminder doesn't work:</strong> Only 0.01% lift, not statistically significant</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-blue-500 mt-1">→</span>
+                      <span><strong>Improved vs 2024:</strong> Better test design (20% control) enabled measurement</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span className="text-amber-500 mt-1">!</span>
+                      <span><strong>Recommendation:</strong> Continue First Contact, discontinue Reminder wave</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Email Performance */}
+          {activeTab === 'email' && (
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Email Performance (Executive Priority)</h2>
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Open Rate & CTR Trend</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={emailData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="wave" />
+                      <YAxis yAxisId="left" domain={[0, 80]} tickFormatter={(v) => `${v}%`} />
+                      <YAxis yAxisId="right" orientation="right" domain={[0, 4]} tickFormatter={(v) => `${v}%`} />
+                      <Tooltip content={<CustomTooltip />} />
+                      <Legend />
+                      <Line yAxisId="left" type="monotone" dataKey="openRate" stroke="#10B981" strokeWidth={3} name="Open Rate" dot={{ r: 6 }} />
+                      <Line yAxisId="right" type="monotone" dataKey="ctr" stroke="#3B82F6" strokeWidth={3} name="CTR" dot={{ r: 6 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className="text-sm text-gray-500 mt-2 text-center">Open Rate (left axis) | CTR (right axis)</p>
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Unsubscribe Rate Trend</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={emailData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="wave" />
+                      <YAxis domain={[0, 0.4]} tickFormatter={(v) => `${v}%`} />
+                      <Tooltip formatter={(v) => `${v}%`} />
+                      <Bar dataKey="unsubRate" name="Unsub Rate" fill="#EF4444" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <p className="text-sm text-red-600 mt-2 text-center font-medium">⚠️ 7.7x increase from 2024 to Reminder</p>
+                </div>
+              </div>
+              <div className="mt-6 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <h4 className="font-medium text-amber-800">Email Health Summary</h4>
+                <div className="grid md:grid-cols-3 gap-4 mt-3">
+                  <div>
+                    <span className="text-green-600 font-medium">✓ Open Rate: Stable</span>
+                    <p className="text-sm text-gray-600">68-69% across all waves</p>
+                  </div>
+                  <div>
+                    <span className="text-amber-600 font-medium">⚠️ CTR: Declining</span>
+                    <p className="text-sm text-gray-600">2.91% → 1.69% → 0.97%</p>
+                  </div>
+                  <div>
+                    <span className="text-red-600 font-medium">⚠️ Unsubs: Increasing</span>
+                    <p className="text-sm text-gray-600">0.046% → 0.199% → 0.353%</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Segments */}
+          {activeTab === 'segments' && (
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Student Segment Analysis</h2>
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Responder Distribution by Segment</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <PieChart>
+                      <Pie
+                        data={segmentData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={100}
+                        paddingAngle={2}
+                        dataKey="value"
+                        label={({ name, value }) => `${name}: ${value}%`}
+                      >
+                        {segmentData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(v) => `${v}%`} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Segment Details</h3>
+                  <div className="space-y-3">
+                    {segmentData.map((seg, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <span className="w-4 h-4 rounded" style={{ backgroundColor: seg.color }}></span>
+                          <span className="font-medium">{seg.name}</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="font-bold">{seg.value}%</span>
+                          <span className="text-gray-500 text-sm ml-2">({seg.count.toLocaleString()} clients)</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 bg-blue-50 p-3 rounded-lg">
+                    <p className="text-sm text-blue-800">
+                      <strong>Key Insight:</strong> Undergraduates represent 69% of responders. 
+                      Medical/Dental is essentially non-responsive (2 clients total).
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Regional */}
+          {activeTab === 'regional' && (
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Regional Analysis</h2>
+              <div className="grid md:grid-cols-3 gap-6">
+                <div className="md:col-span-2">
+                  <h3 className="text-lg font-medium mb-3">Top 10 Regions by Student App Opens</h3>
+                  <ResponsiveContainer width="100%" height={400}>
+                    <BarChart data={regionalData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" />
+                      <YAxis dataKey="region" type="category" width={150} tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(v) => v.toLocaleString()} />
+                      <Bar dataKey="action" fill="#3B82F6" name="Opens" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Regional Concentration</h3>
+                  <div className="space-y-4">
+                    <div className="bg-blue-50 p-4 rounded-lg">
+                      <div className="text-3xl font-bold text-blue-600">37.9%</div>
+                      <div className="text-sm text-gray-600">Top 3 regions share of total opens</div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <div className="text-lg font-medium">Ontario Dominance</div>
+                      <ul className="text-sm text-gray-600 mt-2 space-y-1">
+                        <li>• Greater Toronto: 15.3%</li>
+                        <li>• South West: 13.2%</li>
+                        <li>• North & East: 9.4%</li>
+                      </ul>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded-lg">
+                      <div className="text-sm text-green-800">
+                        <strong>Prairie Strength:</strong> Manitoba & Saskatchewan punch above weight relative to population
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Cross-Sell */}
+          {activeTab === 'crosssell' && (
+            <div>
+              <h2 className="text-xl font-semibold mb-4">Cross-Sell Analysis (2025 First Contact)</h2>
+              <p className="text-gray-600 mb-4">Among clients who opened a student application, additional product adoption within campaign period.</p>
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Cross-Sell Lift by Product Category</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <BarChart data={crossSellData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="product" />
+                      <YAxis tickFormatter={(v) => `${v}%`} />
+                      <Tooltip formatter={(v) => `${v}%`} />
+                      <Legend />
+                      <Bar dataKey="actionPct" name="Action %" fill="#3B82F6" />
+                      <Bar dataKey="controlPct" name="Control %" fill="#9CA3AF" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Lift Summary</h3>
+                  <div className="space-y-3">
+                    {crossSellData.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                        <span className="font-medium">{item.product}</span>
+                        <span className={`font-bold text-lg ${item.lift > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          +{item.lift}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 bg-green-50 p-4 rounded-lg">
+                    <p className="text-sm text-green-800">
+                      <strong>Key Insight:</strong> Campaign drives significant cross-sell activity, 
+                      especially "Other Products" (+25.38% lift) and PBA (+4.52% lift).
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="mt-6 text-center text-sm text-gray-500">
+          Student RCL Campaign Deep Dive | NBA Measurement and Analytics | November 2025
+        </div>
+      </div>
+    </div>
+  );
+}
