@@ -1,1 +1,45 @@
-https://download.geonames.org/export/zip/?hl=en-CA
+Here's a prompt you can send to your other agent:
+
+---
+
+**Prompt for Geospatial Analysis: GTA Campus Clustering**
+
+I need to analyze the relationship between Student RCL application locations and post-secondary institutions in the Greater Toronto Area. The goal is to understand which campuses are driving application volume and identify potential gaps.
+
+**What I need you to build:**
+
+**Step 1: Filter to GTA only**
+
+Limit the application dataset to Greater Toronto Area coordinates only. We're isolating this geography for a focused analysis.
+
+**Step 2: Calculate distance to nearest institution**
+
+For each application in the dataset, calculate the distance to every post-secondary institution in the institution list, then tag each application with:
+- Nearest institution name
+- Distance to that nearest institution (in kilometers)
+
+**Step 3: Create application counts by institution**
+
+Generate a summary table showing:
+- Institution name
+- Count of applications within 5km radius
+- Count of applications within 10km radius
+- Total applications where this institution is the nearest one
+
+**Step 4: Output two deliverables**
+
+First, a ranked table of institutions by application volume, showing which campuses have the highest concentration of nearby applications.
+
+Second, a distribution analysis showing what percentage of all GTA applications fall within 5km, 10km, 15km, and 20km+ of any institution. This tells us how clustered vs. dispersed the applications are overall.
+
+**Optional enhancement if enrollment data is available:**
+
+If we have student enrollment figures for each institution, add a column calculating applications per 1,000 students to show penetration rate. This helps identify underperforming campuses relative to their size.
+
+**Context:**
+
+This analysis is for the Student RCL campaign deep dive. The insight we're looking for is whether certain campuses are over or underperforming in application generation, which could inform future targeting or branch activation strategies.
+
+---
+
+Let me know if you want me to adjust the scope, add anything, or simplify further.
