@@ -1,136 +1,7 @@
 # =============================================================================
-# UCP4 CLIENT EXTRACTION AND EDA
+# UCP4 EDA SECTION - CORRECTED
 # =============================================================================
-# Run each cell separately in Jupyter Notebook
-# =============================================================================
-
-# %% Cell 1: Imports
-from pyspark.sql.functions import broadcast, col, avg, count, when, lit, row_number
-from pyspark.sql import Window
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-sns.set_style("whitegrid")
-
-
-# %% Cell 2: Define Fields
-# Fields to average (6-month avg)
-avg_fields = [
-    # Balances
-    "CC_ALL_PR_BAL", "CC_RETAIL_ALL_PR_BAL", "INVEST_TFSA_MUTUAL_FUND_BAL",
-    "LOAN_ALL_PR_BAL", "LOAN_RCL_ALL_TOT_BAL", "LOAN_RCL_SEC_TOT_BAL",
-    "LOAN_RCL_STUDENT_TOT_BAL", "LOAN_RCL_UNSEC_TOT_BAL", "LOAN_TOT_BAL",
-    "MORTGAGE_BAL", "PDA_TOT_BAL", "INVEST_BRANCH_TOT_BAL", "T_TOT_BAL",
-    "B_TOT_BAL", "C_TOT_BAL", "MORT_TOT_BAL", "REG_SAV_TOT_BAL",
-    "MF_TOT_BAL", "I_TOT_BAL",
-    # Counts
-    "T_TOT_CNT", "I_TOT_CNT", "B_TOT_CNT", "C_TOT_CNT", "SRVC_CNT",
-    "MOBILE_AUTH_MOB_CNT", "MOBILE_AUTH_CNT", "OLB_TRANS_ETRANSFER_RCVD_CNT",
-    "OFI_M_PROD_CNT", "OFI_L_PROD_CNT", "OFI_C_PROD_CNT", "OFI_T_PROD_CNT", "OFI_I_PROD_CNT",
-    # Profitability & Tenure
-    "PROF_TOT_ANNUAL", "PROF_TOT_MONTHLY", "TENURE_RBC_YEARS", "AGE",
-    "ACTV_PROD_CNT", "ACTV_PROD_SRVC_CNT", "OPN_PROD_CNT"
-]
-
-# Fields to take latest value
-latest_fields = [
-    # Demographics
-    "AGE_RNG", "GENERATION", "SEX_SEG_CD", "FSA_CD", "RESID_CNTRY_CD", "SUBCNTRY_CD",
-    "CLNT_SPCFC_CD_VAL", "NXT_GEN_STUD_SEG_CD", "NEW_IMGRNT_SEG_CD", "LOG_COMP_SEG_CD",
-    # Tenure & Relationship
-    "TENURE_RBC_RNGS", "REL_TP_SEG_CD", "RELTN_MGMT_UNIT_NO", "ACCT_MGD_RELTN_TP_CD",
-    # Credit & Risk
-    "CREDIT_SCORE_RNG", "DLQY_IND", "CREDIT_PHASE_SEG_CD", "CLS_CRM_HD_CD",
-    # Income
-    "INCOME_AFTER_TAX_RNG", "PROF_SEG_CD",
-    # Product Indicators
-    "CC_VISA_ALL_TOT_IND", "CC_VISA_DR_IND", "CC_VISA_CLSIC_TOT_IND",
-    "CC_VISA_CLSIC_RWD_TOT_IND", "CC_VISA_GOLD_PRFR_TOT_IND", "CC_VISA_IAV_TOT_IND",
-    "CC_MASTERCARD_ALL_TOT_IND", "LOAN_TOT_IND", "MORTGAGE_RESID_TOT_IND",
-    "LOAN_RCL_UNSEC_TOT_IND", "LOAN_RCL_STUDENT_TOT_IND", "LOAN_STUDENT_TOT_IND",
-    "PDA_STUDENT_CURR_TOT_IND", "PDA_STUDENT_TOT_IND", "MULTI_PROD_RBT_TOT_IND",
-    # Digital
-    "OLB_ENROLLED_IND", "CPK_OLB_ELIGIBLE", "ACTIVE_EMAIL_IND", "MYADVISOR_STATUS",
-    # Segmentation
-    "CLNT_PROD_SEG_CD", "BSC",
-    # Channel Preferences
-    "D2D_BILL_PYMT_CHNL_PREF_SEG_CD", "D2D_DEP_CHNL_PREF_SEG_CD",
-    "D2D_INFO_SEEK_CHNL_PREF_SEG_CD", "D2D_TRF_CHNL_PREF_SEG_CD", "D2D_WD_CHNL_PREF_SEG_CD"
-]
-
-all_fields = ["CLNT_NO"] + avg_fields + latest_fields
-
-
-# %% Cell 3: Define Partitions (6 months)
-partitions = [
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-06-30",
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-07-31",
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-08-31",
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-09-30",
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-10-31",
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
-]
-
-
-# %% Cell 4: Read Client List
-client_list = spark.read.csv(
-    "/user/427966379/VVD_SRF_LIST.csv",
-    header=True
-).select("CLNT_NO").distinct()
-
-print(f"Clients in list: {client_list.count()}")
-
-
-# %% Cell 5: Read and Combine 6 Months of UCP4
-ucp4_all = None
-for i, path in enumerate(partitions):
-    month_data = spark.read.parquet(path).select(all_fields)
-    month_data = month_data.withColumn("MONTH_ORDER", lit(i))
-    
-    if ucp4_all is None:
-        ucp4_all = month_data
-    else:
-        ucp4_all = ucp4_all.union(month_data)
-
-# Filter to client list only
-ucp4_filtered = ucp4_all.join(broadcast(client_list), on="CLNT_NO", how="inner")
-
-print(f"Total records (6 months): {ucp4_filtered.count()}")
-
-
-# %% Cell 6: Aggregate - Averages and Latest Values
-# Window for getting latest row
-w = Window.partitionBy("CLNT_NO").orderBy(col("MONTH_ORDER").desc())
-
-# Get latest row per client for categorical fields
-latest_df = ucp4_filtered.withColumn("rn", row_number().over(w)).filter(col("rn") == 1).drop("rn", "MONTH_ORDER")
-
-# Get averages for numeric fields
-avg_df = ucp4_filtered.groupBy("CLNT_NO").agg(*[avg(col(f)).alias(f) for f in avg_fields])
-
-# Count months per client
-months_df = ucp4_filtered.groupBy("CLNT_NO").agg(count("*").alias("MONTHS_WITH_DATA"))
-
-# Join all together
-final_df = avg_df.join(latest_df.select(["CLNT_NO"] + latest_fields), on="CLNT_NO", how="inner")
-final_df = final_df.join(months_df, on="CLNT_NO", how="inner")
-
-# Add active flag
-final_df = final_df.withColumn("IS_ACTIVE", when(col("ACTV_PROD_CNT") > 0, 1).otherwise(0))
-
-print(f"Final client count: {final_df.count()}")
-print(f"Total columns: {len(final_df.columns)}")
-
-
-# %% Cell 7: Convert to Pandas for EDA
-df = final_df.toPandas()
-print(f"Shape: {df.shape}")
-df.head()
-
-
-# =============================================================================
-# EDA SECTION
+# Run after Cell 7 (Convert to Pandas)
 # =============================================================================
 
 # %% Cell 8: Client Overview
@@ -185,8 +56,8 @@ plt.show()
 # %% Cell 10: Tenure & Relationship
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-# Tenure Range
-df["TENURE_RBC_RNGS"].value_counts().plot(kind="bar", ax=axes[0], color="steelblue")
+# Tenure Range - CORRECTED: TENURE_RBC_RNG (not RNGS)
+df["TENURE_RBC_RNG"].value_counts().plot(kind="bar", ax=axes[0], color="steelblue")
 axes[0].set_title("Tenure Range")
 axes[0].tick_params(axis='x', rotation=45)
 
