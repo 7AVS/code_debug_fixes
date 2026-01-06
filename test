@@ -1,8 +1,32 @@
 # =============================================================================
-# UCP4 EDA SECTION - CORRECTED
+# UCP4 EDA SECTION - WITH TABLES + DECIMAL FIX
 # =============================================================================
 # Run after Cell 7 (Convert to Pandas)
 # =============================================================================
+
+# %% Cell 7b: Fix Decimal Types (RUN THIS FIRST)
+# Convert Decimal columns to float
+from decimal import Decimal
+
+for col in df.columns:
+    if df[col].dtype == object:
+        try:
+            if isinstance(df[col].dropna().iloc[0], Decimal):
+                df[col] = df[col].astype(float)
+        except:
+            pass
+
+# Also convert any numeric-like columns that might be Decimal
+bal_fields = [c for c in df.columns if "_BAL" in c]
+cnt_fields = [c for c in df.columns if "_CNT" in c]
+numeric_fields = bal_fields + cnt_fields + ["PROF_TOT_ANNUAL", "PROF_TOT_MONTHLY", "TENURE_RBC_YEARS", "AGE"]
+
+for col in numeric_fields:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+print("Decimal conversion done.")
+
 
 # %% Cell 8: Client Overview
 fig, axes = plt.subplots(1, 3, figsize=(14, 4))
@@ -28,6 +52,16 @@ axes[2].set_ylabel("Count")
 plt.tight_layout()
 plt.show()
 
+# TABLE: Client Overview
+print("\n=== CLIENT OVERVIEW ===")
+overview_df = pd.DataFrame({
+    "Metric": ["Total Clients", "Active", "Inactive"],
+    "Count": [len(df), active_counts.get(1, 0), active_counts.get(0, 0)],
+    "Pct": [100.0, active_counts.get(1, 0)/len(df)*100, active_counts.get(0, 0)/len(df)*100]
+})
+overview_df["Pct"] = overview_df["Pct"].round(1).astype(str) + "%"
+print(overview_df.to_string(index=False))
+
 
 # %% Cell 9: Demographics
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -52,11 +86,39 @@ axes[1, 1].set_title("Top 10 FSA (Postal Areas)")
 plt.tight_layout()
 plt.show()
 
+# TABLE: Generation
+print("\n=== GENERATION ===")
+gen_df = df["GENERATION"].value_counts().reset_index()
+gen_df.columns = ["Generation", "Count"]
+gen_df["Pct"] = (gen_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(gen_df.to_string(index=False))
+
+# TABLE: Age Range
+print("\n=== AGE RANGE ===")
+age_df = df["AGE_RNG"].value_counts().sort_index().reset_index()
+age_df.columns = ["Age Range", "Count"]
+age_df["Pct"] = (age_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(age_df.to_string(index=False))
+
+# TABLE: Gender
+print("\n=== GENDER ===")
+sex_df = df["SEX_SEG_CD"].value_counts().reset_index()
+sex_df.columns = ["Gender", "Count"]
+sex_df["Pct"] = (sex_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(sex_df.to_string(index=False))
+
+# TABLE: Top 10 FSA
+print("\n=== TOP 10 FSA ===")
+fsa_df = df["FSA_CD"].value_counts().head(10).reset_index()
+fsa_df.columns = ["FSA", "Count"]
+fsa_df["Pct"] = (fsa_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(fsa_df.to_string(index=False))
+
 
 # %% Cell 10: Tenure & Relationship
 fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-# Tenure Range - CORRECTED: TENURE_RBC_RNG (not RNGS)
+# Tenure Range
 df["TENURE_RBC_RNG"].value_counts().plot(kind="bar", ax=axes[0], color="steelblue")
 axes[0].set_title("Tenure Range")
 axes[0].tick_params(axis='x', rotation=45)
@@ -73,6 +135,26 @@ axes[2].set_title("Relationship Type")
 plt.tight_layout()
 plt.show()
 
+# TABLE: Tenure Range
+print("\n=== TENURE RANGE ===")
+tenure_df = df["TENURE_RBC_RNG"].value_counts().reset_index()
+tenure_df.columns = ["Tenure Range", "Count"]
+tenure_df["Pct"] = (tenure_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(tenure_df.to_string(index=False))
+
+# TABLE: Tenure Years Stats
+print("\n=== TENURE YEARS STATS ===")
+tenure_stats = df["TENURE_RBC_YEARS"].describe()[["mean", "50%", "min", "max"]].round(2)
+tenure_stats.index = ["Mean", "Median", "Min", "Max"]
+print(tenure_stats.to_string())
+
+# TABLE: Relationship Type
+print("\n=== RELATIONSHIP TYPE ===")
+rel_df = df["REL_TP_SEG_CD"].value_counts().reset_index()
+rel_df.columns = ["Rel Type", "Count"]
+rel_df["Pct"] = (rel_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(rel_df.to_string(index=False))
+
 
 # %% Cell 11: Product Penetration
 ind_fields = [c for c in df.columns if "_IND" in c]
@@ -85,15 +167,26 @@ plt.xlabel("% of Clients")
 plt.tight_layout()
 plt.show()
 
+# TABLE: Product Penetration
+print("\n=== PRODUCT PENETRATION ===")
+pen_df = pd.DataFrame({
+    "Product": penetration.index,
+    "Count": df[ind_fields].apply(lambda x: (x == 1).sum()).loc[penetration.index].values,
+    "Pct": penetration.values.round(1)
+}).sort_values("Pct", ascending=False)
+pen_df["Pct"] = pen_df["Pct"].astype(str) + "%"
+print(pen_df.to_string(index=False))
+
 
 # %% Cell 12: Balance Summary
 bal_fields = [c for c in df.columns if "_BAL" in c]
+
+# TABLE: Balance Summary
+print("\n=== BALANCE SUMMARY ===")
 bal_summary = df[bal_fields].describe().T[["mean", "50%", "min", "max"]]
 bal_summary.columns = ["Mean", "Median", "Min", "Max"]
 bal_summary = bal_summary.round(2)
-
-print("Balance Summary:")
-print(bal_summary)
+print(bal_summary.to_string())
 
 
 # %% Cell 13: Balance Distributions (Top 6)
@@ -109,6 +202,13 @@ for i, field in enumerate(top_bal):
 
 plt.tight_layout()
 plt.show()
+
+# TABLE: Top 6 Balances Stats
+print("\n=== TOP 6 BALANCE FIELDS ===")
+top_bal_stats = df[top_bal].describe().T[["mean", "50%", "min", "max"]]
+top_bal_stats.columns = ["Mean", "Median", "Min", "Max"]
+top_bal_stats = top_bal_stats.round(2)
+print(top_bal_stats.to_string())
 
 
 # %% Cell 14: Credit & Risk
@@ -130,6 +230,30 @@ axes[2].set_title("Credit Phase")
 
 plt.tight_layout()
 plt.show()
+
+# TABLE: Credit Score Range
+print("\n=== CREDIT SCORE RANGE ===")
+credit_df = df["CREDIT_SCORE_RNG"].value_counts().sort_index().reset_index()
+credit_df.columns = ["Credit Score Range", "Count"]
+credit_df["Pct"] = (credit_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(credit_df.to_string(index=False))
+
+# TABLE: Delinquency
+print("\n=== DELINQUENCY ===")
+dlqy_df = pd.DataFrame({
+    "Status": ["No Delinquency", "Delinquent"],
+    "Count": [dlqy.get(0, 0), dlqy.get(1, 0)],
+    "Pct": [(dlqy.get(0, 0)/len(df)*100), (dlqy.get(1, 0)/len(df)*100)]
+})
+dlqy_df["Pct"] = dlqy_df["Pct"].round(1).astype(str) + "%"
+print(dlqy_df.to_string(index=False))
+
+# TABLE: Credit Phase
+print("\n=== CREDIT PHASE ===")
+phase_df = df["CREDIT_PHASE_SEG_CD"].value_counts().reset_index()
+phase_df.columns = ["Credit Phase", "Count"]
+phase_df["Pct"] = (phase_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(phase_df.to_string(index=False))
 
 
 # %% Cell 15: Profitability
@@ -156,6 +280,20 @@ axes[2].set_title("Annual Profitability (5th-95th pctl)")
 plt.tight_layout()
 plt.show()
 
+# TABLE: Profitability Segment
+print("\n=== PROFITABILITY SEGMENT ===")
+prof_df = df["PROF_SEG_CD"].value_counts().reset_index()
+prof_df.columns = ["Prof Segment", "Count"]
+prof_df["Pct"] = (prof_df["Count"] / len(df) * 100).round(1).astype(str) + "%"
+print(prof_df.to_string(index=False))
+
+# TABLE: Profitability Stats
+print("\n=== PROFITABILITY STATS ===")
+prof_stats = df[["PROF_TOT_MONTHLY", "PROF_TOT_ANNUAL"]].describe().T[["mean", "50%", "min", "max"]]
+prof_stats.columns = ["Mean", "Median", "Min", "Max"]
+prof_stats = prof_stats.round(2)
+print(prof_stats.to_string())
+
 
 # %% Cell 16: Digital Engagement
 fig, axes = plt.subplots(1, 3, figsize=(14, 4))
@@ -177,6 +315,32 @@ axes[2].set_title("Mobile Auth Count (capped at 20)")
 plt.tight_layout()
 plt.show()
 
+# TABLE: OLB Enrolled
+print("\n=== ONLINE BANKING ENROLLED ===")
+olb_df = pd.DataFrame({
+    "Status": ["Not Enrolled", "Enrolled"],
+    "Count": [olb.get(0, 0), olb.get(1, 0)],
+    "Pct": [(olb.get(0, 0)/len(df)*100), (olb.get(1, 0)/len(df)*100)]
+})
+olb_df["Pct"] = olb_df["Pct"].round(1).astype(str) + "%"
+print(olb_df.to_string(index=False))
+
+# TABLE: Active Email
+print("\n=== ACTIVE EMAIL ===")
+email_df = pd.DataFrame({
+    "Status": ["No Email", "Active Email"],
+    "Count": [email.get(0, 0), email.get(1, 0)],
+    "Pct": [(email.get(0, 0)/len(df)*100), (email.get(1, 0)/len(df)*100)]
+})
+email_df["Pct"] = email_df["Pct"].round(1).astype(str) + "%"
+print(email_df.to_string(index=False))
+
+# TABLE: Mobile Auth Stats
+print("\n=== MOBILE AUTH STATS ===")
+mobile_stats = df["MOBILE_AUTH_MOB_CNT"].describe()[["mean", "50%", "min", "max"]].round(2)
+mobile_stats.index = ["Mean", "Median", "Min", "Max"]
+print(mobile_stats.to_string())
+
 
 # %% Cell 17: Cross-tab - Profitability by Generation
 cross1 = pd.crosstab(df["GENERATION"], df["PROF_SEG_CD"], normalize="index") * 100
@@ -190,6 +354,16 @@ plt.legend(title="Prof Segment", bbox_to_anchor=(1.05, 1))
 plt.tight_layout()
 plt.show()
 
+# TABLE: Cross-tab Profitability by Generation
+print("\n=== PROFITABILITY BY GENERATION (%) ===")
+cross1_rounded = cross1.round(1)
+print(cross1_rounded.to_string())
+
+# TABLE: Cross-tab Counts
+print("\n=== PROFITABILITY BY GENERATION (COUNTS) ===")
+cross1_counts = pd.crosstab(df["GENERATION"], df["PROF_SEG_CD"])
+print(cross1_counts.to_string())
+
 
 # %% Cell 18: Cross-tab - Product Holdings by Credit Score
 cross2 = df.groupby("CREDIT_SCORE_RNG")[["LOAN_TOT_IND", "MORTGAGE_RESID_TOT_IND", "CC_VISA_ALL_TOT_IND"]].mean() * 100
@@ -202,13 +376,42 @@ plt.legend(["Loan", "Mortgage", "Visa CC"])
 plt.tight_layout()
 plt.show()
 
+# TABLE: Product Holdings by Credit Score
+print("\n=== PRODUCT HOLDINGS BY CREDIT SCORE (%) ===")
+cross2.columns = ["Loan %", "Mortgage %", "Visa CC %"]
+cross2_rounded = cross2.round(1)
+print(cross2_rounded.to_string())
+
 
 # %% Cell 19: Summary Stats
-print("=== SUMMARY ===")
-print(f"Total Clients: {len(df)}")
-print(f"Active Clients: {df['IS_ACTIVE'].sum()} ({df['IS_ACTIVE'].mean()*100:.1f}%)")
-print(f"Avg Products per Client: {df['ACTV_PROD_CNT'].mean():.1f}")
-print(f"Avg Tenure: {df['TENURE_RBC_YEARS'].mean():.1f} years")
-print(f"Avg Monthly Profitability: ${df['PROF_TOT_MONTHLY'].mean():.2f}")
-print(f"Delinquency Rate: {df['DLQY_IND'].mean()*100:.1f}%")
-print(f"OLB Enrollment: {df['OLB_ENROLLED_IND'].mean()*100:.1f}%")
+print("\n" + "="*50)
+print("FINAL SUMMARY")
+print("="*50)
+summary_data = {
+    "Metric": [
+        "Total Clients",
+        "Active Clients",
+        "Active %",
+        "Avg Products per Client",
+        "Avg Tenure (years)",
+        "Avg Monthly Profitability",
+        "Avg Annual Profitability",
+        "Delinquency Rate",
+        "OLB Enrollment Rate",
+        "Active Email Rate"
+    ],
+    "Value": [
+        len(df),
+        df['IS_ACTIVE'].sum(),
+        f"{df['IS_ACTIVE'].mean()*100:.1f}%",
+        f"{df['ACTV_PROD_CNT'].mean():.1f}",
+        f"{df['TENURE_RBC_YEARS'].mean():.1f}",
+        f"${df['PROF_TOT_MONTHLY'].mean():.2f}",
+        f"${df['PROF_TOT_ANNUAL'].mean():.2f}",
+        f"{df['DLQY_IND'].mean()*100:.1f}%",
+        f"{df['OLB_ENROLLED_IND'].mean()*100:.1f}%",
+        f"{df['ACTIVE_EMAIL_IND'].mean()*100:.1f}%"
+    ]
+}
+summary_df = pd.DataFrame(summary_data)
+print(summary_df.to_string(index=False))
