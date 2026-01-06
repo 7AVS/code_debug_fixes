@@ -1,147 +1,37 @@
-Not much more complicated! You just need to add conditional aggregation using SUM(CASE WHEN...). Here's the updated approach:
-/* Macro to find closest institution AND count institutions within radius */
-%macro find_closest(coord_type, lat_var, long_var);
+Yes, it will run. Since your Jupyter is already connected to Spark through Hadoop, the spark variable should already exist in your environment.
+One suggestion - break it into cells so you can run step by step and catch any issues early:
+Cell 1:
+from pyspark.sql.functions import broadcast
+from collections import Counter
+Cell 2:
+# Read client list
+client_list = spark.read.csv(
+    "/user/427966379/VVD_SRF_LIST.csv",
+    header=True
+).select("CLNT_NO").distinct()
 
-proc sql;
-    create table closest_&coord_type as
-    select 
-        a.id,
-        /* Closest institution */
-        b.inst_id as closest_&coord_type._inst,
-        min(calculated distance) as dist_&coord_type._inst,
-        
-        /* Count within 5km */
-        sum(case when calculated distance <= 5 then 1 else 0 end) as count_&coord_type._5km,
-        
-        /* Count within 10km */
-        sum(case when calculated distance <= 10 then 1 else 0 end) as count_&coord_type._10km
-        
-    from SRCL_OPEN as a
-    cross join (
-        select 
-            inst_id,
-            Latitude,
-            Longitude,
-            geodist(a.&lat_var, a.&long_var, Latitude, Longitude, 'K') as distance
-        from ODEF
-    ) as b
-    group by a.id;
-quit;
+print(f"Clients in list: {client_list.count()}")
+Cell 3:
+# Read UCP4 and filter
+ucp4_data = spark.read.parquet(
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
+)
 
-%mend;
+filtered_ucp4 = ucp4_data.join(
+    broadcast(client_list),
+    on="CLNT_NO",
+    how="inner"
+)
 
-/* Run for all three coordinate types */
-%find_closest(brn, brn_lat, brn_long);
-%find_closest(trn, trn_lat, trn_long);
-%find_closest(res, res_lat, res_long);
-
-/* Merge all results */
-proc sql;
-    create table final_result as
-    select 
-        a.*,
-        
-        /* Branch coordinates */
-        b.closest_brn_inst,
-        b.dist_brn_inst,
-        b.count_brn_5km,
-        b.count_brn_10km,
-        
-        /* Transit coordinates */
-        c.closest_trn_inst,
-        c.dist_trn_inst,
-        c.count_trn_5km,
-        c.count_trn_10km,
-        
-        /* Residential coordinates */
-        d.closest_res_inst,
-        d.dist_res_inst,
-        d.count_res_5km,
-        d.count_res_10km
-        
-    from SRCL_OPEN as a
-    left join closest_brn as b on a.id = b.id
-    left join closest_trn as c on a.id = c.id
-    left join closest_res as d on a.id = d.id;
-quit;
-What This Gives You (per coordinate type):
-closest_brn_inst - ID of nearest institution to branch
-dist_brn_inst - Distance in km to nearest institution
-count_brn_5km - Number of institutions within 5km of branch
-count_brn_10km - Number of institutions within 10km of branch
-(Same pattern repeats for trn and res)
-Performance Impact:
-Minimal - you're already calculating all distances for the cross join
-The SUM(CASE WHEN...) just counts as it processes, no extra joins needed
-Maybe adds 10-15% to runtime at most
-Alternative Simpler Syntax:
-%macro find_closest(coord_type, lat_var, long_var);
-
-proc sql;
-    create table closest_&coord_type as
-    select 
-        a.id,
-        min(geodist(a.&lat_var, a.&long_var, b.Latitude, b.Longitude, 'K')) 
-            as dist_&coord_type._inst,
-        
-        sum(geodist(a.&lat_var, a.&long_var, b.Latitude, b.Longitude, 'K') <= 5) 
-            as count_&coord_type._5km,
-        
-        sum(geodist(a.&lat_var, a.&long_var, b.Latitude, b.Longitude, 'K') <= 10) 
-            as count_&coord_type._10km
-        
-    from SRCL_OPEN as a
-    cross join ODEF as b
-    group by a.id;
-quit;
-
-%mend;
-Note: This version doesn't capture the inst_id of the closest institution. If you need that, use the first version.
-To Also Get the Institution ID:
-You'll need a slightly different approach to capture which specific institution is closest:
-%macro find_closest(coord_type, lat_var, long_var);
-
-/* Step 1: Calculate all distances */
-proc sql;
-    create table all_distances_&coord_type as
-    select 
-        a.id,
-        b.inst_id,
-        geodist(a.&lat_var, a.&long_var, b.Latitude, b.Longitude, 'K') as distance
-    from SRCL_OPEN as a
-    cross join ODEF as b;
-quit;
-
-/* Step 2: Find minimum and counts */
-proc sql;
-    create table closest_&coord_type as
-    select 
-        a.id,
-        
-        /* Get the inst_id with minimum distance */
-        (select inst_id 
-         from all_distances_&coord_type as x
-         where x.id = a.id
-         having distance = min(distance)) as closest_&coord_type._inst,
-        
-        min(a.distance) as dist_&coord_type._inst,
-        sum(a.distance <= 5) as count_&coord_type._5km,
-        sum(a.distance <= 10) as count_&coord_type._10km
-        
-    from all_distances_&coord_type as a
-    group by a.id;
-quit;
-
-/* Clean up temp table */
-proc datasets library=work nolist;
-    delete all_distances_&coord_type;
-quit;
-
-%mend;
-This last approach:
-✅ Gives you the closest institution ID
-✅ Gives you the minimum distance
-✅ Counts institutions within 5km and 10km
-⚠️ Creates intermediate temp tables (but cleans them up)
-⚠️ Slightly slower but more complete
-Which approach do you prefer? Do you need the institution ID of the closest one, or just the distance and counts?
+print(f"Matched records: {filtered_ucp4.count()}")
+print(f"Total columns: {len(filtered_ucp4.columns)}")
+Cell 4:
+# Column breakdown by type
+type_counts = Counter([dtype for name, dtype in filtered_ucp4.dtypes])
+print("Columns by type:")
+for dtype, count in type_counts.items():
+    print(f"  {dtype}: {count}")
+Cell 5:
+# View sample
+filtered_ucp4.show(10, truncate=False)
+This way if something breaks, you'll know exactly where.
