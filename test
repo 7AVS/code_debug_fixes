@@ -1,37 +1,343 @@
-Yes, it will run. Since your Jupyter is already connected to Spark through Hadoop, the spark variable should already exist in your environment.
-One suggestion - break it into cells so you can run step by step and catch any issues early:
-Cell 1:
-from pyspark.sql.functions import broadcast
-from collections import Counter
-Cell 2:
-# Read client list
+# =============================================================================
+# UCP4 CLIENT EXTRACTION AND EDA
+# =============================================================================
+# Run each cell separately in Jupyter Notebook
+# =============================================================================
+
+# %% Cell 1: Imports
+from pyspark.sql.functions import broadcast, col, avg, count, when, lit, row_number
+from pyspark.sql import Window
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_style("whitegrid")
+
+
+# %% Cell 2: Define Fields
+# Fields to average (6-month avg)
+avg_fields = [
+    # Balances
+    "CC_ALL_PR_BAL", "CC_RETAIL_ALL_PR_BAL", "INVEST_TFSA_MUTUAL_FUND_BAL",
+    "LOAN_ALL_PR_BAL", "LOAN_RCL_ALL_TOT_BAL", "LOAN_RCL_SEC_TOT_BAL",
+    "LOAN_RCL_STUDENT_TOT_BAL", "LOAN_RCL_UNSEC_TOT_BAL", "LOAN_TOT_BAL",
+    "MORTGAGE_BAL", "PDA_TOT_BAL", "INVEST_BRANCH_TOT_BAL", "T_TOT_BAL",
+    "B_TOT_BAL", "C_TOT_BAL", "MORT_TOT_BAL", "REG_SAV_TOT_BAL",
+    "MF_TOT_BAL", "I_TOT_BAL",
+    # Counts
+    "T_TOT_CNT", "I_TOT_CNT", "B_TOT_CNT", "C_TOT_CNT", "SRVC_CNT",
+    "MOBILE_AUTH_MOB_CNT", "MOBILE_AUTH_CNT", "OLB_TRANS_ETRANSFER_RCVD_CNT",
+    "OFI_M_PROD_CNT", "OFI_L_PROD_CNT", "OFI_C_PROD_CNT", "OFI_T_PROD_CNT", "OFI_I_PROD_CNT",
+    # Profitability & Tenure
+    "PROF_TOT_ANNUAL", "PROF_TOT_MONTHLY", "TENURE_RBC_YEARS", "AGE",
+    "ACTV_PROD_CNT", "ACTV_PROD_SRVC_CNT", "OPN_PROD_CNT"
+]
+
+# Fields to take latest value
+latest_fields = [
+    # Demographics
+    "AGE_RNG", "GENERATION", "SEX_SEG_CD", "FSA_CD", "RESID_CNTRY_CD", "SUBCNTRY_CD",
+    "CLNT_SPCFC_CD_VAL", "NXT_GEN_STUD_SEG_CD", "NEW_IMGRNT_SEG_CD", "LOG_COMP_SEG_CD",
+    # Tenure & Relationship
+    "TENURE_RBC_RNGS", "REL_TP_SEG_CD", "RELTN_MGMT_UNIT_NO", "ACCT_MGD_RELTN_TP_CD",
+    # Credit & Risk
+    "CREDIT_SCORE_RNG", "DLQY_IND", "CREDIT_PHASE_SEG_CD", "CLS_CRM_HD_CD",
+    # Income
+    "INCOME_AFTER_TAX_RNG", "PROF_SEG_CD",
+    # Product Indicators
+    "CC_VISA_ALL_TOT_IND", "CC_VISA_DR_IND", "CC_VISA_CLSIC_TOT_IND",
+    "CC_VISA_CLSIC_RWD_TOT_IND", "CC_VISA_GOLD_PRFR_TOT_IND", "CC_VISA_IAV_TOT_IND",
+    "CC_MASTERCARD_ALL_TOT_IND", "LOAN_TOT_IND", "MORTGAGE_RESID_TOT_IND",
+    "LOAN_RCL_UNSEC_TOT_IND", "LOAN_RCL_STUDENT_TOT_IND", "LOAN_STUDENT_TOT_IND",
+    "PDA_STUDENT_CURR_TOT_IND", "PDA_STUDENT_TOT_IND", "MULTI_PROD_RBT_TOT_IND",
+    # Digital
+    "OLB_ENROLLED_IND", "CPK_OLB_ELIGIBLE", "ACTIVE_EMAIL_IND", "MYADVISOR_STATUS",
+    # Segmentation
+    "CLNT_PROD_SEG_CD", "BSC",
+    # Channel Preferences
+    "D2D_BILL_PYMT_CHNL_PREF_SEG_CD", "D2D_DEP_CHNL_PREF_SEG_CD",
+    "D2D_INFO_SEEK_CHNL_PREF_SEG_CD", "D2D_TRF_CHNL_PREF_SEG_CD", "D2D_WD_CHNL_PREF_SEG_CD"
+]
+
+all_fields = ["CLNT_NO"] + avg_fields + latest_fields
+
+
+# %% Cell 3: Define Partitions (6 months)
+partitions = [
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-06-30",
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-07-31",
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-08-31",
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-09-30",
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-10-31",
+    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
+]
+
+
+# %% Cell 4: Read Client List
 client_list = spark.read.csv(
     "/user/427966379/VVD_SRF_LIST.csv",
     header=True
 ).select("CLNT_NO").distinct()
 
 print(f"Clients in list: {client_list.count()}")
-Cell 3:
-# Read UCP4 and filter
-ucp4_data = spark.read.parquet(
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
-)
 
-filtered_ucp4 = ucp4_data.join(
-    broadcast(client_list),
-    on="CLNT_NO",
-    how="inner"
-)
 
-print(f"Matched records: {filtered_ucp4.count()}")
-print(f"Total columns: {len(filtered_ucp4.columns)}")
-Cell 4:
-# Column breakdown by type
-type_counts = Counter([dtype for name, dtype in filtered_ucp4.dtypes])
-print("Columns by type:")
-for dtype, count in type_counts.items():
-    print(f"  {dtype}: {count}")
-Cell 5:
-# View sample
-filtered_ucp4.show(10, truncate=False)
-This way if something breaks, you'll know exactly where.
+# %% Cell 5: Read and Combine 6 Months of UCP4
+ucp4_all = None
+for i, path in enumerate(partitions):
+    month_data = spark.read.parquet(path).select(all_fields)
+    month_data = month_data.withColumn("MONTH_ORDER", lit(i))
+    
+    if ucp4_all is None:
+        ucp4_all = month_data
+    else:
+        ucp4_all = ucp4_all.union(month_data)
+
+# Filter to client list only
+ucp4_filtered = ucp4_all.join(broadcast(client_list), on="CLNT_NO", how="inner")
+
+print(f"Total records (6 months): {ucp4_filtered.count()}")
+
+
+# %% Cell 6: Aggregate - Averages and Latest Values
+# Window for getting latest row
+w = Window.partitionBy("CLNT_NO").orderBy(col("MONTH_ORDER").desc())
+
+# Get latest row per client for categorical fields
+latest_df = ucp4_filtered.withColumn("rn", row_number().over(w)).filter(col("rn") == 1).drop("rn", "MONTH_ORDER")
+
+# Get averages for numeric fields
+avg_df = ucp4_filtered.groupBy("CLNT_NO").agg(*[avg(col(f)).alias(f) for f in avg_fields])
+
+# Count months per client
+months_df = ucp4_filtered.groupBy("CLNT_NO").agg(count("*").alias("MONTHS_WITH_DATA"))
+
+# Join all together
+final_df = avg_df.join(latest_df.select(["CLNT_NO"] + latest_fields), on="CLNT_NO", how="inner")
+final_df = final_df.join(months_df, on="CLNT_NO", how="inner")
+
+# Add active flag
+final_df = final_df.withColumn("IS_ACTIVE", when(col("ACTV_PROD_CNT") > 0, 1).otherwise(0))
+
+print(f"Final client count: {final_df.count()}")
+print(f"Total columns: {len(final_df.columns)}")
+
+
+# %% Cell 7: Convert to Pandas for EDA
+df = final_df.toPandas()
+print(f"Shape: {df.shape}")
+df.head()
+
+
+# =============================================================================
+# EDA SECTION
+# =============================================================================
+
+# %% Cell 8: Client Overview
+fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+
+# Total & Active
+active_counts = df["IS_ACTIVE"].value_counts()
+axes[0].bar(["Inactive", "Active"], [active_counts.get(0, 0), active_counts.get(1, 0)], color=["salmon", "seagreen"])
+axes[0].set_title(f"Active vs Inactive\n(Total: {len(df)})")
+axes[0].set_ylabel("Count")
+
+# Months of data
+df["MONTHS_WITH_DATA"].value_counts().sort_index().plot(kind="bar", ax=axes[1], color="steelblue")
+axes[1].set_title("Months of Data per Client")
+axes[1].set_xlabel("Months")
+axes[1].set_ylabel("Count")
+
+# Active product count distribution
+df["ACTV_PROD_CNT"].clip(upper=10).value_counts().sort_index().plot(kind="bar", ax=axes[2], color="darkorange")
+axes[2].set_title("Active Product Count")
+axes[2].set_xlabel("Products (capped at 10)")
+axes[2].set_ylabel("Count")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 9: Demographics
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+# Generation
+df["GENERATION"].value_counts().plot(kind="barh", ax=axes[0, 0], color="teal")
+axes[0, 0].set_title("Generation")
+
+# Age Range
+df["AGE_RNG"].value_counts().sort_index().plot(kind="bar", ax=axes[0, 1], color="coral")
+axes[0, 1].set_title("Age Range")
+axes[0, 1].tick_params(axis='x', rotation=45)
+
+# Gender
+df["SEX_SEG_CD"].value_counts().plot(kind="bar", ax=axes[1, 0], color="mediumpurple")
+axes[1, 0].set_title("Gender")
+
+# Top 10 FSA
+df["FSA_CD"].value_counts().head(10).plot(kind="barh", ax=axes[1, 1], color="olive")
+axes[1, 1].set_title("Top 10 FSA (Postal Areas)")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 10: Tenure & Relationship
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# Tenure Range
+df["TENURE_RBC_RNGS"].value_counts().plot(kind="bar", ax=axes[0], color="steelblue")
+axes[0].set_title("Tenure Range")
+axes[0].tick_params(axis='x', rotation=45)
+
+# Avg Tenure Years
+axes[1].hist(df["TENURE_RBC_YEARS"].dropna(), bins=20, color="seagreen", edgecolor="black")
+axes[1].set_title("Tenure Years Distribution")
+axes[1].set_xlabel("Years")
+
+# Relationship Type
+df["REL_TP_SEG_CD"].value_counts().plot(kind="barh", ax=axes[2], color="darkorange")
+axes[2].set_title("Relationship Type")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 11: Product Penetration
+ind_fields = [c for c in df.columns if "_IND" in c]
+penetration = df[ind_fields].apply(lambda x: (x == 1).sum() / len(df) * 100).sort_values(ascending=True)
+
+plt.figure(figsize=(10, 8))
+penetration.plot(kind="barh", color="teal")
+plt.title("Product Penetration (%)")
+plt.xlabel("% of Clients")
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 12: Balance Summary
+bal_fields = [c for c in df.columns if "_BAL" in c]
+bal_summary = df[bal_fields].describe().T[["mean", "50%", "min", "max"]]
+bal_summary.columns = ["Mean", "Median", "Min", "Max"]
+bal_summary = bal_summary.round(2)
+
+print("Balance Summary:")
+print(bal_summary)
+
+
+# %% Cell 13: Balance Distributions (Top 6)
+top_bal = df[bal_fields].mean().sort_values(ascending=False).head(6).index.tolist()
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+axes = axes.flatten()
+
+for i, field in enumerate(top_bal):
+    df[field].clip(upper=df[field].quantile(0.95)).hist(bins=30, ax=axes[i], color="steelblue", edgecolor="black")
+    axes[i].set_title(field)
+    axes[i].set_xlabel("Balance (capped 95th pctl)")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 14: Credit & Risk
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# Credit Score Range
+df["CREDIT_SCORE_RNG"].value_counts().sort_index().plot(kind="bar", ax=axes[0], color="navy")
+axes[0].set_title("Credit Score Range")
+axes[0].tick_params(axis='x', rotation=45)
+
+# Delinquency
+dlqy = df["DLQY_IND"].value_counts()
+axes[1].bar(["No Delinquency", "Delinquent"], [dlqy.get(0, 0), dlqy.get(1, 0)], color=["seagreen", "crimson"])
+axes[1].set_title("Delinquency Indicator")
+
+# Credit Phase
+df["CREDIT_PHASE_SEG_CD"].value_counts().plot(kind="barh", ax=axes[2], color="darkorange")
+axes[2].set_title("Credit Phase")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 15: Profitability
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# Profitability Segment
+df["PROF_SEG_CD"].value_counts().plot(kind="bar", ax=axes[0], color="teal")
+axes[0].set_title("Profitability Segment")
+
+# Monthly Profitability
+df["PROF_TOT_MONTHLY"].clip(
+    lower=df["PROF_TOT_MONTHLY"].quantile(0.05),
+    upper=df["PROF_TOT_MONTHLY"].quantile(0.95)
+).hist(bins=30, ax=axes[1], color="seagreen", edgecolor="black")
+axes[1].set_title("Monthly Profitability (5th-95th pctl)")
+
+# Annual Profitability
+df["PROF_TOT_ANNUAL"].clip(
+    lower=df["PROF_TOT_ANNUAL"].quantile(0.05),
+    upper=df["PROF_TOT_ANNUAL"].quantile(0.95)
+).hist(bins=30, ax=axes[2], color="coral", edgecolor="black")
+axes[2].set_title("Annual Profitability (5th-95th pctl)")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 16: Digital Engagement
+fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+
+# OLB Enrolled
+olb = df["OLB_ENROLLED_IND"].value_counts()
+axes[0].bar(["Not Enrolled", "Enrolled"], [olb.get(0, 0), olb.get(1, 0)], color=["salmon", "seagreen"])
+axes[0].set_title("Online Banking Enrolled")
+
+# Active Email
+email = df["ACTIVE_EMAIL_IND"].value_counts()
+axes[1].bar(["No Email", "Active Email"], [email.get(0, 0), email.get(1, 0)], color=["salmon", "seagreen"])
+axes[1].set_title("Active Email")
+
+# Mobile Auth Count
+df["MOBILE_AUTH_MOB_CNT"].clip(upper=20).hist(bins=20, ax=axes[2], color="steelblue", edgecolor="black")
+axes[2].set_title("Mobile Auth Count (capped at 20)")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 17: Cross-tab - Profitability by Generation
+cross1 = pd.crosstab(df["GENERATION"], df["PROF_SEG_CD"], normalize="index") * 100
+
+plt.figure(figsize=(12, 6))
+cross1.plot(kind="bar", stacked=True, colormap="viridis", figsize=(12, 6))
+plt.title("Profitability Segment by Generation (%)")
+plt.ylabel("% of Generation")
+plt.xlabel("Generation")
+plt.legend(title="Prof Segment", bbox_to_anchor=(1.05, 1))
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 18: Cross-tab - Product Holdings by Credit Score
+cross2 = df.groupby("CREDIT_SCORE_RNG")[["LOAN_TOT_IND", "MORTGAGE_RESID_TOT_IND", "CC_VISA_ALL_TOT_IND"]].mean() * 100
+
+cross2.plot(kind="bar", figsize=(12, 5), colormap="Set2")
+plt.title("Product Holdings by Credit Score (%)")
+plt.ylabel("% with Product")
+plt.xlabel("Credit Score Range")
+plt.legend(["Loan", "Mortgage", "Visa CC"])
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 19: Summary Stats
+print("=== SUMMARY ===")
+print(f"Total Clients: {len(df)}")
+print(f"Active Clients: {df['IS_ACTIVE'].sum()} ({df['IS_ACTIVE'].mean()*100:.1f}%)")
+print(f"Avg Products per Client: {df['ACTV_PROD_CNT'].mean():.1f}")
+print(f"Avg Tenure: {df['TENURE_RBC_YEARS'].mean():.1f} years")
+print(f"Avg Monthly Profitability: ${df['PROF_TOT_MONTHLY'].mean():.2f}")
+print(f"Delinquency Rate: {df['DLQY_IND'].mean()*100:.1f}%")
+print(f"OLB Enrollment: {df['OLB_ENROLLED_IND'].mean()*100:.1f}%")
