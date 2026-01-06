@@ -1,15 +1,10 @@
-# %% Cell 7b: Fix Decimal Types (RUN THIS FIRST)
-from decimal import Decimal
-import numpy as np
-
-# Convert all numeric-looking columns to float
+# %% Cell 7b: Fix Decimal Types
 bal_fields = [c for c in df.columns if "_BAL" in c]
 cnt_fields = [c for c in df.columns if "_CNT" in c]
 numeric_fields = bal_fields + cnt_fields + ["PROF_TOT_ANNUAL", "PROF_TOT_MONTHLY", "TENURE_RBC_YEARS", "AGE", "ACTV_PROD_CNT", "ACTV_PROD_SRVC_CNT", "OPN_PROD_CNT"]
 
 for field in numeric_fields:
     if field in df.columns:
-        df[field] = df[field].apply(lambda x: float(x) if x is not None else np.nan)
+        df[field] = pd.to_numeric(df[field], errors='coerce')
 
-print("Decimal conversion done.")
-print(f"Converted {len(numeric_fields)} fields to float.")
+print("Conversion done.")
