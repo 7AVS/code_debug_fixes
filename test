@@ -1,10 +1,20 @@
+I see the issue now. The data has None values and Decimal types that aren't converting properly. Let me try a different approach using map:
 # %% Cell 7b: Fix Decimal Types
+def safe_float(x):
+    if x is None:
+        return float('nan')
+    try:
+        return float(x)
+    except:
+        return float('nan')
+
 bal_fields = [c for c in df.columns if "_BAL" in c]
 cnt_fields = [c for c in df.columns if "_CNT" in c]
 numeric_fields = bal_fields + cnt_fields + ["PROF_TOT_ANNUAL", "PROF_TOT_MONTHLY", "TENURE_RBC_YEARS", "AGE", "ACTV_PROD_CNT", "ACTV_PROD_SRVC_CNT", "OPN_PROD_CNT"]
 
 for field in numeric_fields:
     if field in df.columns:
-        df[field] = pd.to_numeric(df[field], errors='coerce')
+        df[field] = df[field].map(safe_float)
 
 print("Conversion done.")
+This defines a function that handles each value individually with proper error handling, then uses map instead of apply or pd.to_numeric.
