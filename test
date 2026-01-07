@@ -1,97 +1,65 @@
-Yes, I understand. So the approach:
-Read the campaign data without filtering by MNE - get all campaigns
-Join with your VVD_SRF client list
-Create flags:
-VVD_CAMPAIGN_FLAG = 1 if client participated in any VVD campaign (VCN, VDA, VDO, VDT, VUI, VUT, VAW)
-OTHER_CAMPAIGN_FLAG = 1 if client participated in any non-VVD campaign
-Optionally: list of MNEs per client, count of campaigns
-Here's the code:
-# %% Cell: Read Campaign Data (All MNEs)
+No, the code I gave you is more complicated than what you need. Let me simplify.
+You want a summary table like:
+MNE
+CLIENT_COUNT
+TOTAL_TIMES_TARGETED
+VCN
+5,000
+12,000
+VDA
+3,200
+8,500
+ABC
+1,500
+2,000
+...
+...
+...
+Where:
+CLIENT_COUNT = unique clients from your list targeted by that campaign
+TOTAL_TIMES_TARGETED = total records (includes repeat targeting)
+Here's the simple version:
+# %% Cell: Read Campaign Data
 from pyspark.sql import functions as F
 
-# VVD campaign mnemonics (priority)
-vvd_mne = ['VCN', 'VDA', 'VDO', 'VDT', 'VUI', 'VUT', 'VAW']
-
-# Paths
 years = ["2024", "2025"]
 paths = [f"/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/EVNT_STRT_DT={year}*" for year in years]
 
-# Read all campaigns (no MNE filter)
 tactic = spark.read.option("basePath", "/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/") \
-    .parquet(*paths)
-
-# Extract MNE and CLNT_NO
-tactic = tactic \
+    .parquet(*paths) \
     .withColumn("MNE", F.substring(F.col("TACTIC_ID"), 8, 3)) \
-    .withColumn("CLNT_NO", F.regexp_replace(F.trim(F.col("TACTIC_EVNT_ID")), "^0+", ""))
+    .withColumn("CLNT_NO", F.regexp_replace(F.trim(F.col("TACTIC_EVNT_ID")), "^0+", "")) \
+    .select("CLNT_NO", "MNE")
 
-# Keep only what we need
-tactic = tactic.select("CLNT_NO", "MNE").distinct()
-
-print(f"Total campaign records: {tactic.count()}")
-print(f"Unique MNEs found:")
-tactic.select("MNE").distinct().show(50, truncate=False)
+print(f"Total tactic records: {tactic.count()}")
 
 
 # %% Cell: Join with Client List
-# Read client list
 client_list = spark.read.csv(
     "/user/427966379/VVD_SRF_LIST.csv",
     header=True
 ).select("CLNT_NO").distinct()
 
-# Join - get campaigns for our clients only
-client_campaigns = client_list.join(tactic, on="CLNT_NO", how="left")
+# Keep only records for our clients
+client_campaigns = tactic.join(broadcast(client_list), on="CLNT_NO", how="inner")
 
-print(f"Clients with campaign data: {client_campaigns.filter(F.col('MNE').isNotNull()).select('CLNT_NO').distinct().count()}")
-
-
-# %% Cell: Create Flags per Client
-from pyspark.sql.functions import collect_set, size, array_intersect, lit, when, array
-
-# Aggregate by client
-client_campaign_summary = client_campaigns.groupBy("CLNT_NO").agg(
-    collect_set("MNE").alias("ALL_MNES")
-)
-
-# Create flags
-vvd_mne_array = array([lit(x) for x in vvd_mne])
-
-client_campaign_summary = client_campaign_summary \
-    .withColumn("VVD_MNES", array_intersect(F.col("ALL_MNES"), vvd_mne_array)) \
-    .withColumn("VVD_CAMPAIGN_FLAG", when(size(F.col("VVD_MNES")) > 0, 1).otherwise(0)) \
-    .withColumn("VVD_CAMPAIGN_COUNT", size(F.col("VVD_MNES"))) \
-    .withColumn("OTHER_MNES", F.array_except(F.col("ALL_MNES"), vvd_mne_array)) \
-    .withColumn("OTHER_CAMPAIGN_FLAG", when(size(F.col("OTHER_MNES")) > 0, 1).otherwise(0)) \
-    .withColumn("OTHER_CAMPAIGN_COUNT", size(F.col("OTHER_MNES"))) \
-    .withColumn("TOTAL_CAMPAIGN_COUNT", size(F.col("ALL_MNES")))
-
-# Handle nulls (clients with no campaign history)
-client_campaign_summary = client_campaign_summary.na.fill(0, ["VVD_CAMPAIGN_FLAG", "VVD_CAMPAIGN_COUNT", "OTHER_CAMPAIGN_FLAG", "OTHER_CAMPAIGN_COUNT", "TOTAL_CAMPAIGN_COUNT"])
-
-client_campaign_summary.show(20, truncate=False)
+print(f"Records matching our client list: {client_campaigns.count()}")
 
 
-# %% Cell: Summary Stats
-print("=== Campaign Participation Summary ===")
-print(f"Total clients: {client_campaign_summary.count()}")
-print(f"Clients in VVD campaigns: {client_campaign_summary.filter(F.col('VVD_CAMPAIGN_FLAG') == 1).count()}")
-print(f"Clients in OTHER campaigns: {client_campaign_summary.filter(F.col('OTHER_CAMPAIGN_FLAG') == 1).count()}")
-print(f"Clients in ANY campaign: {client_campaign_summary.filter(F.col('TOTAL_CAMPAIGN_COUNT') > 0).count()}")
+# %% Cell: Summary by MNE
+summary = client_campaigns.groupBy("MNE").agg(
+    F.countDistinct("CLNT_NO").alias("UNIQUE_CLIENTS"),
+    F.count("*").alias("TOTAL_TIMES_TARGETED")
+).orderBy("TOTAL_TIMES_TARGETED", ascending=False)
 
-# VVD MNE breakdown
-print("\nVVD Campaign Breakdown:")
-client_campaigns.filter(F.col("MNE").isin(vvd_mne)).groupBy("MNE").count().orderBy("count", ascending=False).show()
+summary.show(100, truncate=False)
 
-# Top Other MNEs
-print("\nTop 20 Other Campaigns:")
-client_campaigns.filter(~F.col("MNE").isin(vvd_mne)).groupBy("MNE").count().orderBy("count", ascending=False).show(20)
-This gives you:
-VVD_CAMPAIGN_FLAG - did they participate in any VVD campaign
-VVD_CAMPAIGN_COUNT - how many VVD campaigns
-VVD_MNES - list of which VVD campaigns
-OTHER_CAMPAIGN_FLAG - any non-VVD campaign
-OTHER_CAMPAIGN_COUNT - how many other campaigns
-OTHER_MNES - list of other campaigns
-TOTAL_CAMPAIGN_COUNT - total campaigns
-Want me to put this in a file? Or should we join this back to your main final_df from the UCP4 extraction?
+
+# %% Cell: Overall Stats
+total_clients = client_list.count()
+clients_in_any_campaign = client_campaigns.select("CLNT_NO").distinct().count()
+
+print(f"Total clients in list: {total_clients}")
+print(f"Clients targeted by ANY campaign: {clients_in_any_campaign} ({round(clients_in_any_campaign/total_clients*100, 1)}%)")
+print(f"Clients NOT targeted: {total_clients - clients_in_any_campaign}")
+That's it. Simple summary of MNE vs count. Is this what you want?
