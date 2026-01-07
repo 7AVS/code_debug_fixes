@@ -1,29 +1,41 @@
-Yes, makes total sense. Here's a simple diagnostic:
-# %% Diagnostic: Check how partitions work
+Yes, you're right. Replace TIMES_TARGETED with AVG_TIMES_PER_CLIENT:
+Output:
+MNE
+YEAR_MONTH
+UNIQUE_CLIENTS
+AVG_TIMES_PER_CLIENT
+VCN
+2024-01
+12,000
+1.25
+VCN
+2024-02
+8,500
+1.20
+VDA
+2024-06
+7,800
+1.10
+...
+...
+...
+...
+Code:
+# %% Cell: VVD Campaign Summary by Month
+vvd_mne = ['VCN', 'VDA', 'VDO', 'VDT', 'VUI', 'VUT', 'VAW']
 
-from pyspark.sql import functions as F
+# Filter to VVD only and add year_month
+vvd_campaigns = client_campaigns \
+    .filter(F.col("MNE").isin(vvd_mne)) \
+    .withColumn("YEAR_MONTH", F.date_format(F.col("TREATMT_STRT_DT"), "yyyy-MM"))
 
-# Read ONLY 2025 partition
-tactic_2025_only = spark.read.parquet(
-    "/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/EVNT_STRT_DT=2025*"
-)
+# Summary
+vvd_summary = vvd_campaigns.groupBy("MNE", "YEAR_MONTH").agg(
+    F.countDistinct("CLNT_NO").alias("UNIQUE_CLIENTS"),
+    F.count("*").alias("TOTAL")
+).withColumn("AVG_TIMES_PER_CLIENT", F.round(F.col("TOTAL") / F.col("UNIQUE_CLIENTS"), 2)) \
+ .drop("TOTAL") \
+ .orderBy("MNE", "YEAR_MONTH")
 
-# Check min/max of EVNT_STRT_DT
-print("=== 2025 Partition Only ===")
-tactic_2025_only.select(
-    F.min("EVNT_STRT_DT").alias("MIN_DATE"),
-    F.max("EVNT_STRT_DT").alias("MAX_DATE"),
-    F.countDistinct("EVNT_STRT_DT").alias("UNIQUE_DATES")
-).show()
-
-# See distribution of years in this partition
-print("Year distribution in 2025 partition:")
-tactic_2025_only.withColumn("YEAR", F.year("EVNT_STRT_DT")) \
-    .groupBy("YEAR") \
-    .count() \
-    .orderBy("YEAR") \
-    .show()
-What this tells you:
-If MIN_DATE is 2020-xx-xx → Partition is cumulative, contains all history. You only need latest partition.
-If MIN_DATE is 2025-01-xx → Partition is year-specific. You need both 2024 and 2025 partitions.
-Run this first, then we know how to proceed.
+vvd_summary.show(100, truncate=False)
+This gives you unique clients per campaign per month, and how many times on average each client was targeted in that campaign/month.
