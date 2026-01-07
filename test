@@ -1,27 +1,22 @@
-No, the code I gave you is more complicated than what you need. Let me simplify.
-You want a summary table like:
-MNE
-CLIENT_COUNT
-TOTAL_TIMES_TARGETED
-VCN
-5,000
-12,000
-VDA
-3,200
-8,500
-ABC
-1,500
-2,000
-...
-...
-...
-Where:
-CLIENT_COUNT = unique clients from your list targeted by that campaign
-TOTAL_TIMES_TARGETED = total records (includes repeat targeting)
-Here's the simple version:
-# %% Cell: Read Campaign Data
+Yes, that works. So we need:
+MNE Detail - All campaigns with client count and % of list
+Overall Frequency - How many times targeted by ANY campaign (0, 1, 2, 3+...)
+VVD Frequency - How many times targeted specifically by VVD campaigns (0, 1, 2, 3+...)
+Let me write the code:
+# %% Cell 1: Imports and Setup
 from pyspark.sql import functions as F
+from pyspark.sql.functions import broadcast
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+sns.set_style("whitegrid")
+
+# VVD campaign mnemonics
+vvd_mne = ['VCN', 'VDA', 'VDO', 'VDT', 'VUI', 'VUT', 'VAW']
+
+
+# %% Cell 2: Read Campaign Data
 years = ["2024", "2025"]
 paths = [f"/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/EVNT_STRT_DT={year}*" for year in years]
 
@@ -31,35 +26,142 @@ tactic = spark.read.option("basePath", "/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVN
     .withColumn("CLNT_NO", F.regexp_replace(F.trim(F.col("TACTIC_EVNT_ID")), "^0+", "")) \
     .select("CLNT_NO", "MNE")
 
-print(f"Total tactic records: {tactic.count()}")
+print(f"Total tactic records loaded: {tactic.count()}")
 
 
-# %% Cell: Join with Client List
+# %% Cell 3: Read Client List and Join
 client_list = spark.read.csv(
     "/user/427966379/VVD_SRF_LIST.csv",
     header=True
 ).select("CLNT_NO").distinct()
 
-# Keep only records for our clients
-client_campaigns = tactic.join(broadcast(client_list), on="CLNT_NO", how="inner")
-
-print(f"Records matching our client list: {client_campaigns.count()}")
-
-
-# %% Cell: Summary by MNE
-summary = client_campaigns.groupBy("MNE").agg(
-    F.countDistinct("CLNT_NO").alias("UNIQUE_CLIENTS"),
-    F.count("*").alias("TOTAL_TIMES_TARGETED")
-).orderBy("TOTAL_TIMES_TARGETED", ascending=False)
-
-summary.show(100, truncate=False)
-
-
-# %% Cell: Overall Stats
 total_clients = client_list.count()
-clients_in_any_campaign = client_campaigns.select("CLNT_NO").distinct().count()
-
 print(f"Total clients in list: {total_clients}")
-print(f"Clients targeted by ANY campaign: {clients_in_any_campaign} ({round(clients_in_any_campaign/total_clients*100, 1)}%)")
-print(f"Clients NOT targeted: {total_clients - clients_in_any_campaign}")
-That's it. Simple summary of MNE vs count. Is this what you want?
+
+# Join - keep only our clients
+client_campaigns = tactic.join(broadcast(client_list), on="CLNT_NO", how="inner")
+print(f"Campaign records for our clients: {client_campaigns.count()}")
+
+
+# %% Cell 4: MNE Detail Summary
+mne_summary = client_campaigns.groupBy("MNE").agg(
+    F.countDistinct("CLNT_NO").alias("UNIQUE_CLIENTS"),
+    F.count("*").alias("TIMES_TARGETED")
+).orderBy("UNIQUE_CLIENTS", ascending=False)
+
+mne_df = mne_summary.toPandas()
+mne_df["PCT_OF_LIST"] = (mne_df["UNIQUE_CLIENTS"] / total_clients * 100).round(2)
+mne_df["IS_VVD"] = mne_df["MNE"].isin(vvd_mne).map({True: "VVD", False: "Other"})
+
+print(f"Total unique MNEs: {len(mne_df)}")
+print("\nMNE Summary (Top 30):")
+print(mne_df.head(30).to_string(index=False))
+
+
+# %% Cell 5: Overall Campaign Frequency (per client)
+# Count how many times each client was targeted by ANY campaign
+overall_freq = client_campaigns.groupBy("CLNT_NO").agg(
+    F.count("*").alias("TOTAL_TIMES_TARGETED")
+)
+
+# Join back to full client list to include zeros
+overall_freq = client_list.join(overall_freq, on="CLNT_NO", how="left").na.fill(0)
+
+# Create frequency buckets
+overall_freq_pd = overall_freq.toPandas()
+overall_freq_pd["FREQ_BUCKET"] = pd.cut(
+    overall_freq_pd["TOTAL_TIMES_TARGETED"],
+    bins=[-1, 0, 1, 2, 3, 5, 10, float("inf")],
+    labels=["0", "1", "2", "3", "4-5", "6-10", "10+"]
+)
+
+freq_summary = overall_freq_pd["FREQ_BUCKET"].value_counts().sort_index().reset_index()
+freq_summary.columns = ["TIMES_TARGETED", "CLIENTS"]
+freq_summary["PCT"] = (freq_summary["CLIENTS"] / total_clients * 100).round(2)
+
+print("\nOverall Campaign Frequency:")
+print(freq_summary.to_string(index=False))
+
+
+# %% Cell 6: VVD-Only Frequency (per client)
+# Filter to VVD campaigns only
+vvd_campaigns = client_campaigns.filter(F.col("MNE").isin(vvd_mne))
+
+vvd_freq = vvd_campaigns.groupBy("CLNT_NO").agg(
+    F.count("*").alias("VVD_TIMES_TARGETED")
+)
+
+# Join back to full client list to include zeros
+vvd_freq = client_list.join(vvd_freq, on="CLNT_NO", how="left").na.fill(0)
+
+# Create frequency buckets
+vvd_freq_pd = vvd_freq.toPandas()
+vvd_freq_pd["VVD_FREQ_BUCKET"] = pd.cut(
+    vvd_freq_pd["VVD_TIMES_TARGETED"],
+    bins=[-1, 0, 1, 2, 3, 5, float("inf")],
+    labels=["0", "1", "2", "3", "4-5", "5+"]
+)
+
+vvd_freq_summary = vvd_freq_pd["VVD_FREQ_BUCKET"].value_counts().sort_index().reset_index()
+vvd_freq_summary.columns = ["TIMES_TARGETED_VVD", "CLIENTS"]
+vvd_freq_summary["PCT"] = (vvd_freq_summary["CLIENTS"] / total_clients * 100).round(2)
+
+print("\nVVD Campaign Frequency:")
+print(vvd_freq_summary.to_string(index=False))
+
+
+# %% Cell 7: Visualizations
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+# 1. Top 20 MNEs
+top_mne = mne_df.head(20)
+colors = ["coral" if x == "VVD" else "steelblue" for x in top_mne["IS_VVD"]]
+axes[0, 0].barh(top_mne["MNE"], top_mne["UNIQUE_CLIENTS"], color=colors)
+axes[0, 0].set_title("Top 20 Campaigns (MNE) by Client Count")
+axes[0, 0].set_xlabel("Unique Clients")
+axes[0, 0].invert_yaxis()
+axes[0, 0].legend(handles=[
+    plt.Rectangle((0,0),1,1, color="coral", label="VVD"),
+    plt.Rectangle((0,0),1,1, color="steelblue", label="Other")
+], loc="lower right")
+
+# 2. Overall Frequency
+axes[0, 1].bar(freq_summary["TIMES_TARGETED"], freq_summary["CLIENTS"], color="teal")
+axes[0, 1].set_title("Overall Campaign Frequency\n(How many times targeted by ANY campaign)")
+axes[0, 1].set_xlabel("Times Targeted")
+axes[0, 1].set_ylabel("Clients")
+
+# 3. VVD Frequency
+axes[1, 0].bar(vvd_freq_summary["TIMES_TARGETED_VVD"], vvd_freq_summary["CLIENTS"], color="coral")
+axes[1, 0].set_title("VVD Campaign Frequency\n(How many times targeted by VVD campaigns)")
+axes[1, 0].set_xlabel("Times Targeted (VVD only)")
+axes[1, 0].set_ylabel("Clients")
+
+# 4. VVD vs Other breakdown
+vvd_total = mne_df[mne_df["IS_VVD"] == "VVD"]["UNIQUE_CLIENTS"].sum()
+other_total = mne_df[mne_df["IS_VVD"] == "Other"]["UNIQUE_CLIENTS"].sum()
+axes[1, 1].pie([vvd_total, other_total], labels=["VVD Campaigns", "Other Campaigns"],
+               autopct="%1.1f%%", colors=["coral", "steelblue"])
+axes[1, 1].set_title("Campaign Participation: VVD vs Other")
+
+plt.tight_layout()
+plt.show()
+
+
+# %% Cell 8: Key Stats Summary
+print("=" * 50)
+print("CAMPAIGN PARTICIPATION SUMMARY")
+print("=" * 50)
+print(f"Total clients in list: {total_clients:,}")
+print(f"Clients targeted by ANY campaign: {(overall_freq_pd['TOTAL_TIMES_TARGETED'] > 0).sum():,} ({(overall_freq_pd['TOTAL_TIMES_TARGETED'] > 0).mean()*100:.1f}%)")
+print(f"Clients NEVER targeted: {(overall_freq_pd['TOTAL_TIMES_TARGETED'] == 0).sum():,} ({(overall_freq_pd['TOTAL_TIMES_TARGETED'] == 0).mean()*100:.1f}%)")
+print(f"Clients targeted by VVD: {(vvd_freq_pd['VVD_TIMES_TARGETED'] > 0).sum():,} ({(vvd_freq_pd['VVD_TIMES_TARGETED'] > 0).mean()*100:.1f}%)")
+print(f"Clients NEVER targeted by VVD: {(vvd_freq_pd['VVD_TIMES_TARGETED'] == 0).sum():,} ({(vvd_freq_pd['VVD_TIMES_TARGETED'] == 0).mean()*100:.1f}%)")
+print("=" * 50)
+This gives you:
+MNE Detail Table - All mnemonics, client count, % of list, flagged as VVD or Other
+Overall Frequency Table - Buckets of 0, 1, 2, 3, 4-5, 6-10, 10+ times targeted
+VVD Frequency Table - Same buckets but VVD campaigns only
+4 Visuals - Top MNEs bar chart, overall frequency, VVD frequency, pie chart
+Key Stats - Quick numbers on fresh vs targeted clients
+Want me to put this in a file?
