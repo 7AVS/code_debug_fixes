@@ -1,3 +1,8 @@
+Got it. Changes:
+Dates moved to end
+Add MNE flags (VCN_FLAG, VDA_FLAG, etc.) - 1 if ever participated, 0 if not
+Keep counts
+Add CPK_OLB_ELIGIBLE from UCP (I believe that's the field - it was in our earlier list)
 # %% Cell 1: Setup
 from pyspark.sql import functions as F
 from pyspark.sql.functions import broadcast, when, col, max as spark_max, count
@@ -14,10 +19,10 @@ client_list = spark.read.csv(
 print(f"Total clients: {client_list.count()}")
 
 
-# %% Cell 3: Get UCP Fields (3 fields only)
+# %% Cell 3: Get UCP Fields (4 fields now)
 ucp_fields = spark.read.parquet(
     "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
-).select("CLNT_NO", "ACTIVE_EMAIL_IND", "OLB_ENROLLED_IND", "MOBILE_AUTH_CNT")
+).select("CLNT_NO", "ACTIVE_EMAIL_IND", "OLB_ENROLLED_IND", "MOBILE_AUTH_CNT", "CPK_OLB_ELIGIBLE")
 
 # Join to client list
 client_ucp = client_list.join(broadcast(ucp_fields), on="CLNT_NO", how="left")
@@ -69,31 +74,40 @@ final_output = client_ucp.join(tactic_combined, on="CLNT_NO", how="left")
 count_cols = [f"{mne}_COUNT" for mne in vvd_mne]
 final_output = final_output.na.fill(0, count_cols)
 
+# Create MNE flags (1 if count > 0, else 0)
+for mne in vvd_mne:
+    final_output = final_output.withColumn(
+        f"{mne}_FLAG",
+        when(col(f"{mne}_COUNT") > 0, 1).otherwise(0)
+    )
+
 # Create VVD_EVER_FLAG
 final_output = final_output.withColumn(
     "VVD_EVER_FLAG",
     when(
-        (col("VCN_COUNT") > 0) | (col("VDA_COUNT") > 0) | (col("VDO_COUNT") > 0) |
-        (col("VDT_COUNT") > 0) | (col("VUI_COUNT") > 0) | (col("VUT_COUNT") > 0) |
-        (col("VAW_COUNT") > 0),
+        (col("VCN_FLAG") == 1) | (col("VDA_FLAG") == 1) | (col("VDO_FLAG") == 1) |
+        (col("VDT_FLAG") == 1) | (col("VUI_FLAG") == 1) | (col("VUT_FLAG") == 1) |
+        (col("VAW_FLAG") == 1),
         1
     ).otherwise(0)
 )
 
-# Reorder columns
+# Reorder columns - dates at the end
 final_output = final_output.select(
     "CLNT_NO",
+    # UCP fields
     "ACTIVE_EMAIL_IND",
     "OLB_ENROLLED_IND",
     "MOBILE_AUTH_CNT",
+    "CPK_OLB_ELIGIBLE",
+    # Overall flag
     "VVD_EVER_FLAG",
-    "VCN_COUNT", "VCN_LAST_DATE",
-    "VDA_COUNT", "VDA_LAST_DATE",
-    "VDO_COUNT", "VDO_LAST_DATE",
-    "VDT_COUNT", "VDT_LAST_DATE",
-    "VUI_COUNT", "VUI_LAST_DATE",
-    "VUT_COUNT", "VUT_LAST_DATE",
-    "VAW_COUNT", "VAW_LAST_DATE"
+    # MNE flags
+    "VCN_FLAG", "VDA_FLAG", "VDO_FLAG", "VDT_FLAG", "VUI_FLAG", "VUT_FLAG", "VAW_FLAG",
+    # MNE counts
+    "VCN_COUNT", "VDA_COUNT", "VDO_COUNT", "VDT_COUNT", "VUI_COUNT", "VUT_COUNT", "VAW_COUNT",
+    # MNE dates (at end)
+    "VCN_LAST_DATE", "VDA_LAST_DATE", "VDO_LAST_DATE", "VDT_LAST_DATE", "VUI_LAST_DATE", "VUT_LAST_DATE", "VAW_LAST_DATE"
 )
 
 print(f"Final output rows: {final_output.count()}")
@@ -109,10 +123,11 @@ final_output.coalesce(1).write.csv(
 )
 
 print("CSV saved to /user/427966379/vvd_srf_client_campaign_output")
-This gives you:
-All 438K clients
-3 UCP fields (email, OLB, mobile auth)
+Column order now:
+CLNT_NO
+ACTIVE_EMAIL_IND, OLB_ENROLLED_IND, MOBILE_AUTH_CNT, CPK_OLB_ELIGIBLE
 VVD_EVER_FLAG
-7 count columns (one per MNE)
-7 last date columns (one per MNE)
-Want me to put this in a file?
+VCN_FLAG, VDA_FLAG, VDO_FLAG, VDT_FLAG, VUI_FLAG, VUT_FLAG, VAW_FLAG
+VCN_COUNT, VDA_COUNT, VDO_COUNT, VDT_COUNT, VUI_COUNT, VUT_COUNT, VAW_COUNT
+VCN_LAST_DATE, VDA_LAST_DATE, VDO_LAST_DATE, VDT_LAST_DATE, VUI_LAST_DATE, VUT_LAST_DATE, VAW_LAST_DATE
+Is this correct?
