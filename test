@@ -10,6 +10,7 @@ from pyspark.sql.window import Window
 from pyspark import StorageLevel
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 # Initialize Spark (if not already running)
 spark = SparkSession.builder \
@@ -143,67 +144,94 @@ vcn_tg4 = acquisition_result.filter(
     (F.col("TST_GRP_CD") == "TG4")
 )
 
-# Get total clients in this cohort
-total_clients = vcn_tg4.count()
-print(f"\n=== VCN TG4 Vintage Curve Data ===")
-print(f"Total clients in VCN TG4: {total_clients:,}")
+# Create cohort label (YYYY-MM format for readability)
+vcn_tg4 = vcn_tg4.withColumn(
+    "COHORT",
+    F.date_format(F.col("TREATMT_STRT_DT"), "yyyy-MM")
+)
 
-# Calculate cumulative success by day
+# Get total clients per cohort
+cohort_totals = vcn_tg4.groupBy("COHORT").agg(
+    F.count("*").alias("TOTAL_CLIENTS")
+)
+
+print("\n=== VCN TG4 Cohort Summary ===")
+cohort_totals.orderBy("COHORT").show(50)
+
+# Calculate successes by cohort and day
 vintage_data = vcn_tg4.filter(
     F.col("ACQUISITION_SUCCESS") == 1
-).groupBy("DAYS_TO_FIRST_ACQUISITION").agg(
+).groupBy("COHORT", "DAYS_TO_FIRST_ACQUISITION").agg(
     F.count("*").alias("SUCCESSES_ON_DAY")
-).orderBy("DAYS_TO_FIRST_ACQUISITION")
+).orderBy("COHORT", "DAYS_TO_FIRST_ACQUISITION")
+
+# Join with cohort totals to calculate rates
+vintage_data = vintage_data.join(cohort_totals, on="COHORT", how="left")
 
 # Convert to Pandas for plotting
 vintage_pdf = vintage_data.toPandas()
+cohort_totals_pdf = cohort_totals.toPandas()
 
-# Calculate cumulative successes and rate
-vintage_pdf = vintage_pdf.sort_values("DAYS_TO_FIRST_ACQUISITION")
-vintage_pdf["CUMULATIVE_SUCCESSES"] = vintage_pdf["SUCCESSES_ON_DAY"].cumsum()
-vintage_pdf["CUMULATIVE_SUCCESS_RATE"] = vintage_pdf["CUMULATIVE_SUCCESSES"] / total_clients * 100
+# Calculate cumulative successes and rate per cohort
+vintage_pdf = vintage_pdf.sort_values(["COHORT", "DAYS_TO_FIRST_ACQUISITION"])
+vintage_pdf["CUMULATIVE_SUCCESSES"] = vintage_pdf.groupby("COHORT")["SUCCESSES_ON_DAY"].cumsum()
+vintage_pdf["CUMULATIVE_SUCCESS_RATE"] = vintage_pdf["CUMULATIVE_SUCCESSES"] / vintage_pdf["TOTAL_CLIENTS"] * 100
 
-print("\nVintage Data:")
-print(vintage_pdf)
+print("\nVintage Data (sample):")
+print(vintage_pdf.head(20))
 
 # =============================================================================
-# STEP 9: Plot Vintage Curve
+# STEP 9: Plot Vintage Curve - One Line Per Cohort
 # =============================================================================
 
-plt.figure(figsize=(10, 6))
-plt.plot(
-    vintage_pdf["DAYS_TO_FIRST_ACQUISITION"], 
-    vintage_pdf["CUMULATIVE_SUCCESS_RATE"],
-    marker='o',
-    linewidth=2,
-    markersize=4,
-    color='#2E86AB'
-)
+plt.figure(figsize=(12, 7))
+
+# Get unique cohorts and assign colors
+cohorts = sorted(vintage_pdf["COHORT"].unique())
+colors = plt.cm.viridis(np.linspace(0, 1, len(cohorts)))
+
+for i, cohort in enumerate(cohorts):
+    cohort_data = vintage_pdf[vintage_pdf["COHORT"] == cohort]
+    plt.plot(
+        cohort_data["DAYS_TO_FIRST_ACQUISITION"], 
+        cohort_data["CUMULATIVE_SUCCESS_RATE"],
+        marker='o',
+        linewidth=1.5,
+        markersize=3,
+        color=colors[i],
+        label=cohort,
+        alpha=0.8
+    )
 
 plt.xlabel("Days from Treatment", fontsize=12)
 plt.ylabel("Cumulative Acquisition Rate (%)", fontsize=12)
-plt.title("VCN Campaign Vintage Curve - Action Group (TG4)\n30-Day Measurement Window", fontsize=14)
+plt.title("VCN Campaign Vintage Curves by Cohort - Action Group (TG4)\n30-Day Measurement Window", fontsize=14)
 plt.grid(True, alpha=0.3)
 plt.xlim(0, 30)
 plt.ylim(0, None)
-
-# Add final rate annotation
-if len(vintage_pdf) > 0:
-    final_rate = vintage_pdf["CUMULATIVE_SUCCESS_RATE"].iloc[-1]
-    final_day = vintage_pdf["DAYS_TO_FIRST_ACQUISITION"].iloc[-1]
-    plt.annotate(
-        f'{final_rate:.2f}%',
-        xy=(final_day, final_rate),
-        xytext=(final_day - 5, final_rate + 1),
-        fontsize=10,
-        arrowprops=dict(arrowstyle='->', color='gray')
-    )
+plt.legend(title="Cohort", bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
 
 plt.tight_layout()
-plt.savefig("/user/427966379/vcn_tg4_vintage_curve.png", dpi=150)
+plt.savefig("/user/427966379/vcn_tg4_vintage_curve_by_cohort.png", dpi=150, bbox_inches='tight')
 plt.show()
 
-print(f"\nVintage curve saved to: /user/427966379/vcn_tg4_vintage_curve.png")
+print(f"\nVintage curve saved to: /user/427966379/vcn_tg4_vintage_curve_by_cohort.png")
+
+# =============================================================================
+# STEP 10: Summary Table - Final Rate by Cohort
+# =============================================================================
+
+# Get final cumulative rate for each cohort (at day 30 or last available day)
+final_rates = vintage_pdf.loc[vintage_pdf.groupby("COHORT")["DAYS_TO_FIRST_ACQUISITION"].idxmax()]
+final_rates = final_rates[["COHORT", "TOTAL_CLIENTS", "CUMULATIVE_SUCCESSES", "CUMULATIVE_SUCCESS_RATE"]]
+final_rates = final_rates.rename(columns={
+    "CUMULATIVE_SUCCESSES": "TOTAL_ACQUISITIONS",
+    "CUMULATIVE_SUCCESS_RATE": "FINAL_ACQUISITION_RATE"
+})
+final_rates = final_rates.sort_values("COHORT")
+
+print("\n=== Final Acquisition Rate by Cohort ===")
+print(final_rates.to_string(index=False))
 
 # Optional: Save results
 # acquisition_result.write.parquet("/user/427966379/acquisition_success.parquet", mode="overwrite")
