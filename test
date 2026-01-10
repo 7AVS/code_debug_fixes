@@ -1,133 +1,124 @@
-Got it. Changes:
-Dates moved to end
-Add MNE flags (VCN_FLAG, VDA_FLAG, etc.) - 1 if ever participated, 0 if not
-Keep counts
-Add CPK_OLB_ELIGIBLE from UCP (I believe that's the field - it was in our earlier list)
-# %% Cell 1: Setup
+"""
+VVD Acquisition Success Detection
+Campaigns: VCN (30-day window), VDA (90-day window)
+Success Metric: New card issued (ISS_DT within measurement window)
+"""
+
+from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.functions import broadcast, when, col, max as spark_max, count
+from pyspark import StorageLevel
 
-vvd_mne = ['VCN', 'VDA', 'VDO', 'VDT', 'VUI', 'VUT', 'VAW']
+# Initialize Spark (if not already running)
+spark = SparkSession.builder \
+    .appName("VVD Acquisition Success") \
+    .getOrCreate()
 
+# =============================================================================
+# STEP 1: Load tactic DataFrame and filter for acquisition campaigns
+# =============================================================================
 
-# %% Cell 2: Read Client List (Base)
-client_list = spark.read.csv(
-    "/user/427966379/VVD_SRF_LIST.csv",
-    header=True
-).select("CLNT_NO").distinct()
+tactic = spark.read.parquet("/user/427966379/tactic.parquet")
 
-print(f"Total clients: {client_list.count()}")
-
-
-# %% Cell 3: Get UCP Fields (4 fields now)
-ucp_fields = spark.read.parquet(
-    "/prod/sz/tsz/00172/data/ucp4/MONTH_END_DATE=2025-11-30"
-).select("CLNT_NO", "ACTIVE_EMAIL_IND", "OLB_ENROLLED_IND", "MOBILE_AUTH_CNT", "CPK_OLB_ELIGIBLE")
-
-# Join to client list
-client_ucp = client_list.join(broadcast(ucp_fields), on="CLNT_NO", how="left")
-
-
-# %% Cell 4: Read Tactic Data (VVD only)
-years = ["2024", "2025"]
-paths = [f"/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/EVNT_STRT_DT={year}*" for year in years]
-
-tactic = spark.read.option("basePath", "/prod/sz/tsz/00150/cc/DTZTA_T_TACTIC_EVNT_HIST/") \
-    .parquet(*paths) \
-    .withColumn("MNE", F.substring(F.col("TACTIC_ID"), 8, 3)) \
-    .withColumn("CLNT_NO", F.regexp_replace(F.trim(F.col("TACTIC_EVNT_ID")), "^0+", "")) \
-    .filter(F.col("MNE").isin(vvd_mne)) \
-    .select("CLNT_NO", "MNE", "TREATMT_STRT_DT")
-
-# Join to client list only
-tactic_filtered = tactic.join(broadcast(client_list), on="CLNT_NO", how="inner")
-
-
-# %% Cell 5: Pivot - Count and Last Date per MNE
-# Count per MNE
-count_pivot = tactic_filtered.groupBy("CLNT_NO").pivot("MNE", vvd_mne).agg(
-    count("*")
-).na.fill(0)
-
-# Rename columns to _COUNT
-for mne in vvd_mne:
-    count_pivot = count_pivot.withColumnRenamed(mne, f"{mne}_COUNT")
-
-# Last date per MNE
-date_pivot = tactic_filtered.groupBy("CLNT_NO").pivot("MNE", vvd_mne).agg(
-    spark_max("TREATMT_STRT_DT")
+# Filter for acquisition campaigns only (VCN and VDA)
+acquisition_campaigns = tactic.filter(
+    F.col("MNE").isin(["VCN", "VDA"])
 )
 
-# Rename columns to _LAST_DATE
-for mne in vvd_mne:
-    date_pivot = date_pivot.withColumnRenamed(mne, f"{mne}_LAST_DATE")
+# =============================================================================
+# STEP 2: Add measurement_end_dt based on campaign type
+# =============================================================================
 
-
-# %% Cell 6: Combine Everything
-# Join count and date pivots
-tactic_combined = count_pivot.join(date_pivot, on="CLNT_NO", how="outer")
-
-# Join to client_ucp (base)
-final_output = client_ucp.join(tactic_combined, on="CLNT_NO", how="left")
-
-# Fill nulls for counts
-count_cols = [f"{mne}_COUNT" for mne in vvd_mne]
-final_output = final_output.na.fill(0, count_cols)
-
-# Create MNE flags (1 if count > 0, else 0)
-for mne in vvd_mne:
-    final_output = final_output.withColumn(
-        f"{mne}_FLAG",
-        when(col(f"{mne}_COUNT") > 0, 1).otherwise(0)
-    )
-
-# Create VVD_EVER_FLAG
-final_output = final_output.withColumn(
-    "VVD_EVER_FLAG",
-    when(
-        (col("VCN_FLAG") == 1) | (col("VDA_FLAG") == 1) | (col("VDO_FLAG") == 1) |
-        (col("VDT_FLAG") == 1) | (col("VUI_FLAG") == 1) | (col("VUT_FLAG") == 1) |
-        (col("VAW_FLAG") == 1),
-        1
-    ).otherwise(0)
+# VCN = 30 days, VDA = 90 days
+acquisition_campaigns = acquisition_campaigns.withColumn(
+    "measurement_end_dt",
+    F.when(F.col("MNE") == "VCN", F.date_add(F.col("TREATMT_STRT_DT"), 30))
+     .when(F.col("MNE") == "VDA", F.date_add(F.col("TREATMT_STRT_DT"), 90))
 )
 
-# Reorder columns - dates at the end
-final_output = final_output.select(
-    "CLNT_NO",
-    # UCP fields
-    "ACTIVE_EMAIL_IND",
-    "OLB_ENROLLED_IND",
-    "MOBILE_AUTH_CNT",
-    "CPK_OLB_ELIGIBLE",
-    # Overall flag
-    "VVD_EVER_FLAG",
-    # MNE flags
-    "VCN_FLAG", "VDA_FLAG", "VDO_FLAG", "VDT_FLAG", "VUI_FLAG", "VUT_FLAG", "VAW_FLAG",
-    # MNE counts
-    "VCN_COUNT", "VDA_COUNT", "VDO_COUNT", "VDT_COUNT", "VUI_COUNT", "VUT_COUNT", "VAW_COUNT",
-    # MNE dates (at end)
-    "VCN_LAST_DATE", "VDA_LAST_DATE", "VDO_LAST_DATE", "VDT_LAST_DATE", "VUI_LAST_DATE", "VUT_LAST_DATE", "VAW_LAST_DATE"
+# Alias for join
+acq = acquisition_campaigns.alias("acq")
+
+# =============================================================================
+# STEP 3: Load Visa Card Data (for acquisition/issuance)
+# =============================================================================
+
+# Read card issuance data - adjust years as needed
+visa_card = spark.read.parquet(
+    "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=2024*",
+    "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=2025*"
 )
 
-print(f"Final output rows: {final_output.count()}")
-print(f"Final output columns: {len(final_output.columns)}")
-final_output.show(20, truncate=False)
+# Select relevant columns and alias
+visa_card_select = visa_card.select(
+    F.col("CLNT_NO").alias("CARD_CLNT_NO"),
+    "ISS_DT",
+    "ACTV_DT"
+).alias("card")
 
+# =============================================================================
+# STEP 4: Left join to identify acquisition success
+# =============================================================================
 
-# %% Cell 7: Save to CSV
-final_output.coalesce(1).write.csv(
-    "/user/427966379/vvd_srf_client_campaign_output",
-    header=True,
-    mode="overwrite"
+# Join condition: 
+# - Client match
+# - Card issued within measurement window (ISS_DT between treatment start and end)
+
+acquisition_with_success = acq.join(
+    visa_card_select,
+    (F.col("acq.CLNT_NO") == F.col("card.CARD_CLNT_NO")) &
+    (F.col("card.ISS_DT") >= F.col("acq.TREATMT_STRT_DT")) &
+    (F.col("card.ISS_DT") <= F.col("acq.measurement_end_dt")),
+    how="left"
 )
 
-print("CSV saved to /user/427966379/vvd_srf_client_campaign_output")
-Column order now:
-CLNT_NO
-ACTIVE_EMAIL_IND, OLB_ENROLLED_IND, MOBILE_AUTH_CNT, CPK_OLB_ELIGIBLE
-VVD_EVER_FLAG
-VCN_FLAG, VDA_FLAG, VDO_FLAG, VDT_FLAG, VUI_FLAG, VUT_FLAG, VAW_FLAG
-VCN_COUNT, VDA_COUNT, VDO_COUNT, VDT_COUNT, VUI_COUNT, VUT_COUNT, VAW_COUNT
-VCN_LAST_DATE, VDA_LAST_DATE, VDO_LAST_DATE, VDT_LAST_DATE, VUI_LAST_DATE, VUT_LAST_DATE, VAW_LAST_DATE
-Is this correct?
+# =============================================================================
+# STEP 5: Flag success and calculate days to success
+# =============================================================================
+
+acquisition_final = acquisition_with_success.withColumn(
+    "ACQUISITION_SUCCESS",
+    F.when(F.col("card.ISS_DT").isNotNull(), 1).otherwise(0)
+).withColumn(
+    "DAYS_TO_ACQUISITION",
+    F.when(
+        F.col("card.ISS_DT").isNotNull(),
+        F.datediff(F.col("card.ISS_DT"), F.col("acq.TREATMT_STRT_DT"))
+    ).otherwise(None)
+)
+
+# =============================================================================
+# STEP 6: Aggregate to client-deployment level (in case of multiple cards)
+# =============================================================================
+
+# One row per client per deployment, take first success if multiple
+acquisition_result = acquisition_final.groupBy(
+    "acq.CLNT_NO",
+    "acq.TACTIC_ID",
+    "acq.TREATMT_STRT_DT",
+    "acq.CAMPAIGN_NAME",
+    "acq.CHANNEL",
+    "acq.MNE",
+    "measurement_end_dt"
+).agg(
+    F.max("ACQUISITION_SUCCESS").alias("ACQUISITION_SUCCESS"),
+    F.min("DAYS_TO_ACQUISITION").alias("DAYS_TO_ACQUISITION")  # First success
+)
+
+# =============================================================================
+# STEP 7: Output
+# =============================================================================
+
+# Show sample results
+acquisition_result.show(20)
+
+# Print summary stats
+print("=== Acquisition Success Summary ===")
+acquisition_result.groupBy("MNE").agg(
+    F.count("*").alias("TOTAL_DEPLOYMENTS"),
+    F.sum("ACQUISITION_SUCCESS").alias("SUCCESSES"),
+    F.avg("ACQUISITION_SUCCESS").alias("SUCCESS_RATE"),
+    F.avg("DAYS_TO_ACQUISITION").alias("AVG_DAYS_TO_ACQUISITION")
+).show()
+
+# Optional: Save results
+# acquisition_result.write.parquet("/user/427966379/acquisition_success.parquet", mode="overwrite")
