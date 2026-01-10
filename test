@@ -6,7 +6,10 @@ Success Metric: New card issued (ISS_DT within measurement window)
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 from pyspark import StorageLevel
+import matplotlib.pyplot as plt
+import pandas as pd
 
 # Initialize Spark (if not already running)
 spark = SparkSession.builder \
@@ -18,6 +21,9 @@ spark = SparkSession.builder \
 # =============================================================================
 
 tactic = spark.read.parquet("/user/427966379/tactic.parquet")
+
+# Get all tactic column names for later use
+tactic_columns = tactic.columns
 
 # Filter for acquisition campaigns only (VCN and VDA)
 acquisition_campaigns = tactic.filter(
@@ -87,17 +93,14 @@ acquisition_final = acquisition_with_success.withColumn(
 # STEP 6: Aggregate to client-deployment level (capture first success + count)
 # =============================================================================
 
+# Build groupBy columns - all tactic fields plus measurement_end_dt
+groupby_columns = [f"acq.{col}" for col in tactic_columns] + ["measurement_end_dt"]
+
 # One row per client per deployment
 # - First success date and days for vintage curves
 # - Count for volume analysis
 acquisition_result = acquisition_final.groupBy(
-    "acq.CLNT_NO",
-    "acq.TACTIC_ID",
-    "acq.TREATMT_STRT_DT",
-    "acq.CAMPAIGN_NAME",
-    "acq.CHANNEL",
-    "acq.MNE",
-    "measurement_end_dt"
+    groupby_columns
 ).agg(
     # Success flag (1 if at least one acquisition)
     F.max(F.when(F.col("card.ISS_DT").isNotNull(), 1).otherwise(0)).alias("ACQUISITION_SUCCESS"),
@@ -129,6 +132,78 @@ acquisition_result.groupBy("MNE").agg(
     F.sum("ACQUISITION_COUNT").alias("TOTAL_CARDS_ACQUIRED"),
     F.avg("ACQUISITION_COUNT").alias("AVG_CARDS_PER_SUCCESS")
 ).show()
+
+# =============================================================================
+# STEP 8: Vintage Curve for VCN - Action Group (TG4) Only
+# =============================================================================
+
+# Filter for VCN and TG4 (action group)
+vcn_tg4 = acquisition_result.filter(
+    (F.col("MNE") == "VCN") & 
+    (F.col("TST_GRP_CD") == "TG4")
+)
+
+# Get total clients in this cohort
+total_clients = vcn_tg4.count()
+print(f"\n=== VCN TG4 Vintage Curve Data ===")
+print(f"Total clients in VCN TG4: {total_clients:,}")
+
+# Calculate cumulative success by day
+vintage_data = vcn_tg4.filter(
+    F.col("ACQUISITION_SUCCESS") == 1
+).groupBy("DAYS_TO_FIRST_ACQUISITION").agg(
+    F.count("*").alias("SUCCESSES_ON_DAY")
+).orderBy("DAYS_TO_FIRST_ACQUISITION")
+
+# Convert to Pandas for plotting
+vintage_pdf = vintage_data.toPandas()
+
+# Calculate cumulative successes and rate
+vintage_pdf = vintage_pdf.sort_values("DAYS_TO_FIRST_ACQUISITION")
+vintage_pdf["CUMULATIVE_SUCCESSES"] = vintage_pdf["SUCCESSES_ON_DAY"].cumsum()
+vintage_pdf["CUMULATIVE_SUCCESS_RATE"] = vintage_pdf["CUMULATIVE_SUCCESSES"] / total_clients * 100
+
+print("\nVintage Data:")
+print(vintage_pdf)
+
+# =============================================================================
+# STEP 9: Plot Vintage Curve
+# =============================================================================
+
+plt.figure(figsize=(10, 6))
+plt.plot(
+    vintage_pdf["DAYS_TO_FIRST_ACQUISITION"], 
+    vintage_pdf["CUMULATIVE_SUCCESS_RATE"],
+    marker='o',
+    linewidth=2,
+    markersize=4,
+    color='#2E86AB'
+)
+
+plt.xlabel("Days from Treatment", fontsize=12)
+plt.ylabel("Cumulative Acquisition Rate (%)", fontsize=12)
+plt.title("VCN Campaign Vintage Curve - Action Group (TG4)\n30-Day Measurement Window", fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.xlim(0, 30)
+plt.ylim(0, None)
+
+# Add final rate annotation
+if len(vintage_pdf) > 0:
+    final_rate = vintage_pdf["CUMULATIVE_SUCCESS_RATE"].iloc[-1]
+    final_day = vintage_pdf["DAYS_TO_FIRST_ACQUISITION"].iloc[-1]
+    plt.annotate(
+        f'{final_rate:.2f}%',
+        xy=(final_day, final_rate),
+        xytext=(final_day - 5, final_rate + 1),
+        fontsize=10,
+        arrowprops=dict(arrowstyle='->', color='gray')
+    )
+
+plt.tight_layout()
+plt.savefig("/user/427966379/vcn_tg4_vintage_curve.png", dpi=150)
+plt.show()
+
+print(f"\nVintage curve saved to: /user/427966379/vcn_tg4_vintage_curve.png")
 
 # Optional: Save results
 # acquisition_result.write.parquet("/user/427966379/acquisition_success.parquet", mode="overwrite")
