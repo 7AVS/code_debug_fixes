@@ -72,13 +72,10 @@ acquisition_with_success = acq.join(
 )
 
 # =============================================================================
-# STEP 5: Flag success and calculate days to success
+# STEP 5: Calculate days to success (keep ISS_DT for aggregation)
 # =============================================================================
 
 acquisition_final = acquisition_with_success.withColumn(
-    "ACQUISITION_SUCCESS",
-    F.when(F.col("card.ISS_DT").isNotNull(), 1).otherwise(0)
-).withColumn(
     "DAYS_TO_ACQUISITION",
     F.when(
         F.col("card.ISS_DT").isNotNull(),
@@ -87,10 +84,12 @@ acquisition_final = acquisition_with_success.withColumn(
 )
 
 # =============================================================================
-# STEP 6: Aggregate to client-deployment level (in case of multiple cards)
+# STEP 6: Aggregate to client-deployment level (capture first success + count)
 # =============================================================================
 
-# One row per client per deployment, take first success if multiple
+# One row per client per deployment
+# - First success date and days for vintage curves
+# - Count for volume analysis
 acquisition_result = acquisition_final.groupBy(
     "acq.CLNT_NO",
     "acq.TACTIC_ID",
@@ -100,8 +99,17 @@ acquisition_result = acquisition_final.groupBy(
     "acq.MNE",
     "measurement_end_dt"
 ).agg(
-    F.max("ACQUISITION_SUCCESS").alias("ACQUISITION_SUCCESS"),
-    F.min("DAYS_TO_ACQUISITION").alias("DAYS_TO_ACQUISITION")  # First success
+    # Success flag (1 if at least one acquisition)
+    F.max(F.when(F.col("card.ISS_DT").isNotNull(), 1).otherwise(0)).alias("ACQUISITION_SUCCESS"),
+    
+    # First acquisition date (for vintage curve)
+    F.min("card.ISS_DT").alias("FIRST_ACQUISITION_DT"),
+    
+    # Days to first acquisition (for vintage curve)
+    F.min("DAYS_TO_ACQUISITION").alias("DAYS_TO_FIRST_ACQUISITION"),
+    
+    # Total cards acquired (for volume analysis)
+    F.count("card.ISS_DT").alias("ACQUISITION_COUNT")
 )
 
 # =============================================================================
@@ -117,7 +125,9 @@ acquisition_result.groupBy("MNE").agg(
     F.count("*").alias("TOTAL_DEPLOYMENTS"),
     F.sum("ACQUISITION_SUCCESS").alias("SUCCESSES"),
     F.avg("ACQUISITION_SUCCESS").alias("SUCCESS_RATE"),
-    F.avg("DAYS_TO_ACQUISITION").alias("AVG_DAYS_TO_ACQUISITION")
+    F.avg("DAYS_TO_FIRST_ACQUISITION").alias("AVG_DAYS_TO_FIRST_ACQUISITION"),
+    F.sum("ACQUISITION_COUNT").alias("TOTAL_CARDS_ACQUIRED"),
+    F.avg("ACQUISITION_COUNT").alias("AVG_CARDS_PER_SUCCESS")
 ).show()
 
 # Optional: Save results
