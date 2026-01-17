@@ -1,7 +1,9 @@
 """
-VVD Acquisition Success Detection
-Campaigns: VCN (30-day window), VDA (90-day window)
-Success Metric: New card issued (ISS_DT within measurement window)
+VVD Vintage Curve Analysis - Test vs Control
+- Compares TG4 (Test/Action) vs All Others (Control)
+- Calculates Absolute Lift + 95% Confidence Interval
+- Generates one plot per cohort
+- Exports full table for analysis
 """
 
 from pyspark.sql import SparkSession
@@ -11,227 +13,460 @@ from pyspark import StorageLevel
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from scipy import stats
 
-# Initialize Spark (if not already running)
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+CAMPAIGN_CONFIG = {
+    "VCN": {
+        "success_type": "ACQUISITION",
+        "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
+        "success_date_field": "ISS_DT",
+        "window_days": 30,
+    },
+    "VDA": {
+        "success_type": "ACQUISITION",
+        "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
+        "success_date_field": "ISS_DT",
+        "window_days": 90,
+    },
+    "VDT": {
+        "success_type": "ACTIVATION",
+        "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
+        "success_date_field": "ACTV_DT",
+        "window_days": 30,
+    },
+}
+
+# =============================================================================
+# INITIALIZE SPARK
+# =============================================================================
+
 spark = SparkSession.builder \
-    .appName("VVD Acquisition Success") \
+    .appName("VVD Vintage Curves - Test vs Control") \
     .getOrCreate()
 
 # =============================================================================
-# STEP 1: Load tactic DataFrame and filter for acquisition campaigns
+# FUNCTIONS
 # =============================================================================
 
-tactic = spark.read.parquet("/user/427966379/tactic.parquet")
+def load_tactic(mne):
+    """Load tactic data and filter for specific campaign."""
+    tactic = spark.read.parquet("/user/427966379/tactic.parquet")
+    return tactic.filter(F.col("MNE") == mne)
 
-# Get all tactic column names for later use
-tactic_columns = tactic.columns
 
-# Filter for acquisition campaigns only (VCN and VDA)
-acquisition_campaigns = tactic.filter(
-    F.col("MNE").isin(["VCN", "VDA"])
-)
+def load_success_table(config, years=["2024", "2025"]):
+    """Load success table with year partitions."""
+    paths = [f"{config['success_table_path']}{year}*" for year in years]
+    return spark.read.parquet(*paths)
 
-# =============================================================================
-# STEP 2: Add measurement_end_dt based on campaign type
-# =============================================================================
 
-# VCN = 30 days, VDA = 90 days
-acquisition_campaigns = acquisition_campaigns.withColumn(
-    "measurement_end_dt",
-    F.when(F.col("MNE") == "VCN", F.date_add(F.col("TREATMT_STRT_DT"), 30))
-     .when(F.col("MNE") == "VDA", F.date_add(F.col("TREATMT_STRT_DT"), 90))
-)
-
-# Alias for join
-acq = acquisition_campaigns.alias("acq")
-
-# =============================================================================
-# STEP 3: Load Visa Card Data (for acquisition/issuance)
-# =============================================================================
-
-# Read card issuance data - adjust years as needed
-visa_card = spark.read.parquet(
-    "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=2024*",
-    "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=2025*"
-)
-
-# Select relevant columns and alias
-visa_card_select = visa_card.select(
-    F.col("CLNT_NO").alias("CARD_CLNT_NO"),
-    "ISS_DT",
-    "ACTV_DT"
-).alias("card")
-
-# =============================================================================
-# STEP 4: Left join to identify acquisition success
-# =============================================================================
-
-# Join condition: 
-# - Client match
-# - Card issued within measurement window (ISS_DT between treatment start and end)
-
-acquisition_with_success = acq.join(
-    visa_card_select,
-    (F.col("acq.CLNT_NO") == F.col("card.CARD_CLNT_NO")) &
-    (F.col("card.ISS_DT") >= F.col("acq.TREATMT_STRT_DT")) &
-    (F.col("card.ISS_DT") <= F.col("acq.measurement_end_dt")),
-    how="left"
-)
-
-# =============================================================================
-# STEP 5: Calculate days to success (keep ISS_DT for aggregation)
-# =============================================================================
-
-acquisition_final = acquisition_with_success.withColumn(
-    "DAYS_TO_ACQUISITION",
-    F.when(
-        F.col("card.ISS_DT").isNotNull(),
-        F.datediff(F.col("card.ISS_DT"), F.col("acq.TREATMT_STRT_DT"))
-    ).otherwise(None)
-)
-
-# =============================================================================
-# STEP 6: Aggregate to client-deployment level (capture first success + count)
-# =============================================================================
-
-# Build groupBy columns - all tactic fields plus measurement_end_dt
-groupby_columns = [f"acq.{col}" for col in tactic_columns] + ["measurement_end_dt"]
-
-# One row per client per deployment
-# - First success date and days for vintage curves
-# - Count for volume analysis
-acquisition_result = acquisition_final.groupBy(
-    groupby_columns
-).agg(
-    # Success flag (1 if at least one acquisition)
-    F.max(F.when(F.col("card.ISS_DT").isNotNull(), 1).otherwise(0)).alias("ACQUISITION_SUCCESS"),
+def detect_success(tactic_df, success_df, config):
+    """
+    Join tactic with success table to detect successes.
+    Returns standardized DataFrame with success flags.
+    """
+    # Get all tactic columns
+    tactic_columns = tactic_df.columns
     
-    # First acquisition date (for vintage curve)
-    F.min("card.ISS_DT").alias("FIRST_ACQUISITION_DT"),
-    
-    # Days to first acquisition (for vintage curve)
-    F.min("DAYS_TO_ACQUISITION").alias("DAYS_TO_FIRST_ACQUISITION"),
-    
-    # Total cards acquired (for volume analysis)
-    F.count("card.ISS_DT").alias("ACQUISITION_COUNT")
-)
-
-# =============================================================================
-# STEP 7: Output
-# =============================================================================
-
-# Show sample results
-acquisition_result.show(20)
-
-# Print summary stats
-print("=== Acquisition Success Summary ===")
-acquisition_result.groupBy("MNE").agg(
-    F.count("*").alias("TOTAL_DEPLOYMENTS"),
-    F.sum("ACQUISITION_SUCCESS").alias("SUCCESSES"),
-    F.avg("ACQUISITION_SUCCESS").alias("SUCCESS_RATE"),
-    F.avg("DAYS_TO_FIRST_ACQUISITION").alias("AVG_DAYS_TO_FIRST_ACQUISITION"),
-    F.sum("ACQUISITION_COUNT").alias("TOTAL_CARDS_ACQUIRED"),
-    F.avg("ACQUISITION_COUNT").alias("AVG_CARDS_PER_SUCCESS")
-).show()
-
-# =============================================================================
-# STEP 8: Vintage Curve for VCN - Action Group (TG4) Only
-# =============================================================================
-
-# Filter for VCN and TG4 (action group)
-vcn_tg4 = acquisition_result.filter(
-    (F.col("MNE") == "VCN") & 
-    (F.col("TST_GRP_CD") == "TG4")
-)
-
-# Create cohort label (YYYY-MM format for readability)
-vcn_tg4 = vcn_tg4.withColumn(
-    "COHORT",
-    F.date_format(F.col("TREATMT_STRT_DT"), "yyyy-MM")
-)
-
-# Get total clients per cohort
-cohort_totals = vcn_tg4.groupBy("COHORT").agg(
-    F.count("*").alias("TOTAL_CLIENTS")
-)
-
-print("\n=== VCN TG4 Cohort Summary ===")
-cohort_totals.orderBy("COHORT").show(50)
-
-# Calculate successes by cohort and day
-vintage_data = vcn_tg4.filter(
-    F.col("ACQUISITION_SUCCESS") == 1
-).groupBy("COHORT", "DAYS_TO_FIRST_ACQUISITION").agg(
-    F.count("*").alias("SUCCESSES_ON_DAY")
-).orderBy("COHORT", "DAYS_TO_FIRST_ACQUISITION")
-
-# Join with cohort totals to calculate rates
-vintage_data = vintage_data.join(cohort_totals, on="COHORT", how="left")
-
-# Convert to Pandas for plotting
-vintage_pdf = vintage_data.toPandas()
-cohort_totals_pdf = cohort_totals.toPandas()
-
-# Calculate cumulative successes and rate per cohort
-vintage_pdf = vintage_pdf.sort_values(["COHORT", "DAYS_TO_FIRST_ACQUISITION"])
-vintage_pdf["CUMULATIVE_SUCCESSES"] = vintage_pdf.groupby("COHORT")["SUCCESSES_ON_DAY"].cumsum()
-vintage_pdf["CUMULATIVE_SUCCESS_RATE"] = vintage_pdf["CUMULATIVE_SUCCESSES"] / vintage_pdf["TOTAL_CLIENTS"] * 100
-
-print("\nVintage Data (sample):")
-print(vintage_pdf.head(20))
-
-# =============================================================================
-# STEP 9: Plot Vintage Curve - One Line Per Cohort
-# =============================================================================
-
-plt.figure(figsize=(12, 7))
-
-# Get unique cohorts and assign colors
-cohorts = sorted(vintage_pdf["COHORT"].unique())
-colors = plt.cm.viridis(np.linspace(0, 1, len(cohorts)))
-
-for i, cohort in enumerate(cohorts):
-    cohort_data = vintage_pdf[vintage_pdf["COHORT"] == cohort]
-    plt.plot(
-        cohort_data["DAYS_TO_FIRST_ACQUISITION"], 
-        cohort_data["CUMULATIVE_SUCCESS_RATE"],
-        marker='o',
-        linewidth=1.5,
-        markersize=3,
-        color=colors[i],
-        label=cohort,
-        alpha=0.8
+    # Add measurement window and test/control flag
+    tactic_df = tactic_df.withColumn(
+        "measurement_end_dt",
+        F.date_add(F.col("TREATMT_STRT_DT"), config["window_days"])
+    ).withColumn(
+        "GROUP",
+        F.when(F.col("TST_GRP_CD") == "TG4", "TEST").otherwise("CONTROL")
+    ).withColumn(
+        "COHORT",
+        F.date_format(F.col("TREATMT_STRT_DT"), "yyyy-MM-dd")
     )
+    
+    # Alias for join
+    tactic_alias = tactic_df.alias("t")
+    
+    # Prepare success table
+    success_date_field = config["success_date_field"]
+    success_select = success_df.select(
+        F.col("CLNT_NO").alias("SUCCESS_CLNT_NO"),
+        F.col(success_date_field).alias("SUCCESS_DT")
+    ).alias("s")
+    
+    # Left join - success within measurement window
+    joined = tactic_alias.join(
+        success_select,
+        (F.col("t.CLNT_NO") == F.col("s.SUCCESS_CLNT_NO")) &
+        (F.col("s.SUCCESS_DT") >= F.col("t.TREATMT_STRT_DT")) &
+        (F.col("s.SUCCESS_DT") <= F.col("t.measurement_end_dt")),
+        how="left"
+    )
+    
+    # Calculate days to success
+    joined = joined.withColumn(
+        "DAYS_TO_SUCCESS",
+        F.when(
+            F.col("s.SUCCESS_DT").isNotNull(),
+            F.datediff(F.col("s.SUCCESS_DT"), F.col("t.TREATMT_STRT_DT"))
+        ).otherwise(None)
+    )
+    
+    # Aggregate to client-deployment level
+    groupby_cols = [f"t.{col}" for col in tactic_columns] + ["measurement_end_dt", "GROUP", "COHORT"]
+    
+    result = joined.groupBy(groupby_cols).agg(
+        F.max(F.when(F.col("s.SUCCESS_DT").isNotNull(), 1).otherwise(0)).alias("SUCCESS_FLAG"),
+        F.min("s.SUCCESS_DT").alias("FIRST_SUCCESS_DT"),
+        F.min("DAYS_TO_SUCCESS").alias("DAYS_TO_FIRST_SUCCESS"),
+        F.count("s.SUCCESS_DT").alias("SUCCESS_COUNT")
+    )
+    
+    return result
 
-plt.xlabel("Days from Treatment", fontsize=12)
-plt.ylabel("Cumulative Acquisition Rate (%)", fontsize=12)
-plt.title("VCN Campaign Vintage Curves by Cohort - Action Group (TG4)\n30-Day Measurement Window", fontsize=14)
-plt.grid(True, alpha=0.3)
-plt.xlim(0, 30)
-plt.ylim(0, None)
-plt.legend(title="Cohort", bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
 
-plt.tight_layout()
-plt.savefig("/user/427966379/vcn_tg4_vintage_curve_by_cohort.png", dpi=150, bbox_inches='tight')
-plt.show()
+def build_vintage_data(success_df):
+    """
+    Build vintage curve data from success DataFrame.
+    Returns DataFrame with cumulative rates by cohort, group, and day.
+    """
+    # Total clients per cohort and group
+    totals = success_df.groupBy("COHORT", "GROUP").agg(
+        F.count("*").alias("TOTAL_CLIENTS")
+    )
+    
+    # Successes by cohort, group, and day
+    successes = success_df.filter(
+        F.col("SUCCESS_FLAG") == 1
+    ).groupBy("COHORT", "GROUP", "DAYS_TO_FIRST_SUCCESS").agg(
+        F.count("*").alias("SUCCESSES_ON_DAY")
+    )
+    
+    # Join totals
+    vintage = successes.join(totals, on=["COHORT", "GROUP"], how="left")
+    
+    return vintage.orderBy("COHORT", "GROUP", "DAYS_TO_FIRST_SUCCESS")
 
-print(f"\nVintage curve saved to: /user/427966379/vcn_tg4_vintage_curve_by_cohort.png")
+
+def calculate_confidence_interval(test_successes, test_n, ctrl_successes, ctrl_n, confidence=0.95):
+    """
+    Calculate confidence interval for absolute lift (difference in proportions).
+    Uses normal approximation.
+    """
+    if test_n == 0 or ctrl_n == 0:
+        return np.nan, np.nan, np.nan
+    
+    p_test = test_successes / test_n
+    p_ctrl = ctrl_successes / ctrl_n
+    
+    lift = p_test - p_ctrl
+    
+    # Standard error of difference
+    se = np.sqrt((p_test * (1 - p_test) / test_n) + (p_ctrl * (1 - p_ctrl) / ctrl_n))
+    
+    # Z-score for confidence level
+    z = stats.norm.ppf(1 - (1 - confidence) / 2)
+    
+    ci_lower = lift - z * se
+    ci_upper = lift + z * se
+    
+    return lift, ci_lower, ci_upper
+
+
+def prepare_vintage_table(vintage_spark_df, window_days):
+    """
+    Convert to Pandas, calculate cumulative rates, lift, and CI.
+    """
+    pdf = vintage_spark_df.toPandas()
+    
+    if pdf.empty:
+        return pdf
+    
+    # Sort
+    pdf = pdf.sort_values(["COHORT", "GROUP", "DAYS_TO_FIRST_SUCCESS"])
+    
+    # Cumulative successes per cohort-group
+    pdf["CUMULATIVE_SUCCESSES"] = pdf.groupby(["COHORT", "GROUP"])["SUCCESSES_ON_DAY"].cumsum()
+    pdf["CUMULATIVE_RATE"] = pdf["CUMULATIVE_SUCCESSES"] / pdf["TOTAL_CLIENTS"] * 100
+    
+    # Rename for clarity
+    pdf = pdf.rename(columns={"DAYS_TO_FIRST_SUCCESS": "DAY"})
+    
+    # Fill in missing days (0 to window_days) for complete curves
+    all_days = range(0, window_days + 1)
+    cohorts = pdf["COHORT"].unique()
+    groups = ["TEST", "CONTROL"]
+    
+    # Create complete grid
+    complete_rows = []
+    for cohort in cohorts:
+        for group in groups:
+            cohort_group_data = pdf[(pdf["COHORT"] == cohort) & (pdf["GROUP"] == group)]
+            if cohort_group_data.empty:
+                continue
+            
+            total_clients = cohort_group_data["TOTAL_CLIENTS"].iloc[0]
+            max_day = cohort_group_data["DAY"].max()
+            
+            cum_successes = 0
+            for day in all_days:
+                if day > max_day:
+                    break  # Don't extrapolate beyond available data
+                
+                day_data = cohort_group_data[cohort_group_data["DAY"] == day]
+                if not day_data.empty:
+                    cum_successes = day_data["CUMULATIVE_SUCCESSES"].iloc[0]
+                
+                complete_rows.append({
+                    "COHORT": cohort,
+                    "GROUP": group,
+                    "DAY": day,
+                    "TOTAL_CLIENTS": total_clients,
+                    "CUMULATIVE_SUCCESSES": cum_successes,
+                    "CUMULATIVE_RATE": cum_successes / total_clients * 100 if total_clients > 0 else 0
+                })
+    
+    complete_df = pd.DataFrame(complete_rows)
+    
+    # Calculate lift and CI for each cohort-day
+    lift_rows = []
+    for cohort in cohorts:
+        cohort_data = complete_df[complete_df["COHORT"] == cohort]
+        test_data = cohort_data[cohort_data["GROUP"] == "TEST"]
+        ctrl_data = cohort_data[cohort_data["GROUP"] == "CONTROL"]
+        
+        for day in test_data["DAY"].unique():
+            test_row = test_data[test_data["DAY"] == day]
+            ctrl_row = ctrl_data[ctrl_data["DAY"] == day]
+            
+            if test_row.empty or ctrl_row.empty:
+                continue
+            
+            test_successes = test_row["CUMULATIVE_SUCCESSES"].iloc[0]
+            test_n = test_row["TOTAL_CLIENTS"].iloc[0]
+            ctrl_successes = ctrl_row["CUMULATIVE_SUCCESSES"].iloc[0]
+            ctrl_n = ctrl_row["TOTAL_CLIENTS"].iloc[0]
+            
+            lift, ci_lower, ci_upper = calculate_confidence_interval(
+                test_successes, test_n, ctrl_successes, ctrl_n
+            )
+            
+            lift_rows.append({
+                "COHORT": cohort,
+                "DAY": day,
+                "TEST_CLIENTS": test_n,
+                "TEST_SUCCESSES": test_successes,
+                "TEST_RATE": test_row["CUMULATIVE_RATE"].iloc[0],
+                "CTRL_CLIENTS": ctrl_n,
+                "CTRL_SUCCESSES": ctrl_successes,
+                "CTRL_RATE": ctrl_row["CUMULATIVE_RATE"].iloc[0],
+                "ABS_LIFT": lift * 100,  # Convert to percentage points
+                "CI_LOWER": ci_lower * 100,
+                "CI_UPPER": ci_upper * 100
+            })
+    
+    lift_df = pd.DataFrame(lift_rows)
+    
+    # Add significance flag (CI doesn't cross zero)
+    if not lift_df.empty:
+        lift_df["SIGNIFICANT"] = (lift_df["CI_LOWER"] > 0) | (lift_df["CI_UPPER"] < 0)
+    
+    return lift_df
+
+
+def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
+    """
+    Plot vintage curve for a single cohort - Test vs Control.
+    """
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), height_ratios=[2, 1])
+    
+    # --- Top plot: Conversion rates ---
+    ax1.plot(
+        cohort_df["DAY"],
+        cohort_df["TEST_RATE"],
+        marker='o',
+        linewidth=2,
+        markersize=4,
+        color='#2E86AB',
+        label=f'Test (TG4) - n={cohort_df["TEST_CLIENTS"].iloc[0]:,}'
+    )
+    ax1.plot(
+        cohort_df["DAY"],
+        cohort_df["CTRL_RATE"],
+        marker='s',
+        linewidth=2,
+        markersize=4,
+        color='#A23B72',
+        label=f'Control - n={cohort_df["CTRL_CLIENTS"].iloc[0]:,}'
+    )
+    
+    ax1.set_xlabel("Days from Treatment", fontsize=11)
+    ax1.set_ylabel("Cumulative Conversion Rate (%)", fontsize=11)
+    ax1.set_title(f"{mne} Campaign - Cohort {cohort_name}\n{config['success_type']} Success | {config['window_days']}-Day Window", fontsize=13)
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(0, config['window_days'])
+    ax1.set_ylim(0, None)
+    
+    # Add final rates annotation
+    final_row = cohort_df[cohort_df["DAY"] == cohort_df["DAY"].max()].iloc[0]
+    ax1.annotate(
+        f'Test: {final_row["TEST_RATE"]:.2f}%',
+        xy=(final_row["DAY"], final_row["TEST_RATE"]),
+        xytext=(final_row["DAY"] - 5, final_row["TEST_RATE"] + 0.3),
+        fontsize=9, color='#2E86AB'
+    )
+    ax1.annotate(
+        f'Ctrl: {final_row["CTRL_RATE"]:.2f}%',
+        xy=(final_row["DAY"], final_row["CTRL_RATE"]),
+        xytext=(final_row["DAY"] - 5, final_row["CTRL_RATE"] - 0.3),
+        fontsize=9, color='#A23B72'
+    )
+    
+    # --- Bottom plot: Absolute Lift with CI ---
+    ax2.plot(
+        cohort_df["DAY"],
+        cohort_df["ABS_LIFT"],
+        marker='o',
+        linewidth=2,
+        markersize=4,
+        color='#28A745',
+        label='Absolute Lift'
+    )
+    ax2.fill_between(
+        cohort_df["DAY"],
+        cohort_df["CI_LOWER"],
+        cohort_df["CI_UPPER"],
+        alpha=0.3,
+        color='#28A745',
+        label='95% CI'
+    )
+    ax2.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.7)
+    
+    ax2.set_xlabel("Days from Treatment", fontsize=11)
+    ax2.set_ylabel("Absolute Lift (pp)", fontsize=11)
+    ax2.set_title("Absolute Lift (Test - Control) with 95% Confidence Interval", fontsize=11)
+    ax2.legend(loc='upper left', fontsize=9)
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(0, config['window_days'])
+    
+    # Add final lift annotation
+    ax2.annotate(
+        f'Lift: {final_row["ABS_LIFT"]:.2f}pp\nCI: [{final_row["CI_LOWER"]:.2f}, {final_row["CI_UPPER"]:.2f}]',
+        xy=(final_row["DAY"], final_row["ABS_LIFT"]),
+        xytext=(final_row["DAY"] - 8, final_row["ABS_LIFT"]),
+        fontsize=9, color='#28A745',
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+    )
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Plot saved: {save_path}")
+
+
+def generate_summary_table(lift_df):
+    """
+    Generate summary table with final rates per cohort.
+    """
+    # Get max day per cohort (final measurement)
+    final_rates = lift_df.loc[lift_df.groupby("COHORT")["DAY"].idxmax()].copy()
+    
+    final_rates = final_rates[[
+        "COHORT", "TEST_CLIENTS", "TEST_SUCCESSES", "TEST_RATE",
+        "CTRL_CLIENTS", "CTRL_SUCCESSES", "CTRL_RATE",
+        "ABS_LIFT", "CI_LOWER", "CI_UPPER", "SIGNIFICANT"
+    ]].sort_values("COHORT")
+    
+    return final_rates
+
 
 # =============================================================================
-# STEP 10: Summary Table - Final Rate by Cohort
+# MAIN EXECUTION
 # =============================================================================
 
-# Get final cumulative rate for each cohort (at day 30 or last available day)
-final_rates = vintage_pdf.loc[vintage_pdf.groupby("COHORT")["DAYS_TO_FIRST_ACQUISITION"].idxmax()]
-final_rates = final_rates[["COHORT", "TOTAL_CLIENTS", "CUMULATIVE_SUCCESSES", "CUMULATIVE_SUCCESS_RATE"]]
-final_rates = final_rates.rename(columns={
-    "CUMULATIVE_SUCCESSES": "TOTAL_ACQUISITIONS",
-    "CUMULATIVE_SUCCESS_RATE": "FINAL_ACQUISITION_RATE"
-})
-final_rates = final_rates.sort_values("COHORT")
+def run_vintage_analysis(mne):
+    """
+    Run full vintage analysis for a campaign.
+    """
+    print(f"\n{'='*60}")
+    print(f"Running Vintage Analysis for {mne}")
+    print(f"{'='*60}")
+    
+    config = CAMPAIGN_CONFIG[mne]
+    
+    # Step 1: Load data
+    print("\n[1] Loading tactic data...")
+    tactic_df = load_tactic(mne)
+    print(f"    Tactic records: {tactic_df.count():,}")
+    
+    print("\n[2] Loading success table...")
+    success_table = load_success_table(config)
+    
+    # Step 2: Detect success
+    print("\n[3] Detecting success...")
+    success_df = detect_success(tactic_df, success_table, config)
+    success_df.persist(StorageLevel.MEMORY_AND_DISK)
+    
+    # Summary
+    print("\n[4] Success summary:")
+    success_df.groupBy("GROUP").agg(
+        F.count("*").alias("TOTAL"),
+        F.sum("SUCCESS_FLAG").alias("SUCCESSES"),
+        F.avg("SUCCESS_FLAG").alias("SUCCESS_RATE")
+    ).show()
+    
+    # Step 3: Build vintage data
+    print("\n[5] Building vintage curves...")
+    vintage_spark = build_vintage_data(success_df)
+    
+    # Step 4: Calculate lift and CI
+    print("\n[6] Calculating lift and confidence intervals...")
+    vintage_table = prepare_vintage_table(vintage_spark, config["window_days"])
+    
+    if vintage_table.empty:
+        print("WARNING: No vintage data generated!")
+        return None, None
+    
+    # Step 5: Generate plots for each cohort
+    print("\n[7] Generating plots...")
+    cohorts = sorted(vintage_table["COHORT"].unique())
+    
+    for cohort in cohorts:
+        cohort_df = vintage_table[vintage_table["COHORT"] == cohort]
+        save_path = f"/user/427966379/{mne}_vintage_{cohort}.png"
+        plot_cohort_vintage(cohort_df, cohort, mne, config, save_path)
+    
+    # Step 6: Generate summary table
+    print("\n[8] Summary Table (Final Rates by Cohort):")
+    summary_table = generate_summary_table(vintage_table)
+    print(summary_table.to_string(index=False))
+    
+    # Step 7: Save outputs
+    print("\n[9] Saving outputs...")
+    vintage_table.to_csv(f"/user/427966379/{mne}_vintage_full.csv", index=False)
+    summary_table.to_csv(f"/user/427966379/{mne}_vintage_summary.csv", index=False)
+    print(f"    Full table: /user/427966379/{mne}_vintage_full.csv")
+    print(f"    Summary: /user/427966379/{mne}_vintage_summary.csv")
+    
+    return vintage_table, summary_table
 
-print("\n=== Final Acquisition Rate by Cohort ===")
-print(final_rates.to_string(index=False))
 
-# Optional: Save results
-# acquisition_result.write.parquet("/user/427966379/acquisition_success.parquet", mode="overwrite")
+# =============================================================================
+# RUN FOR EACH CAMPAIGN
+# =============================================================================
+
+if __name__ == "__main__":
+    # Run for VCN (Acquisition - 30 days)
+    vcn_vintage, vcn_summary = run_vintage_analysis("VCN")
+    
+    # Run for VDA (Acquisition - 90 days)
+    # vda_vintage, vda_summary = run_vintage_analysis("VDA")
+    
+    # Run for VDT (Activation - 30 days)
+    # vdt_vintage, vdt_summary = run_vintage_analysis("VDT")
+    
+    print("\n" + "="*60)
+    print("ANALYSIS COMPLETE")
+    print("="*60)
