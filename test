@@ -1,9 +1,15 @@
 """
-VVD Vintage Curve Analysis - Test vs Control
-- Compares TG4 (Test/Action) vs All Others (Control)
-- Calculates Absolute Lift + 95% Confidence Interval
-- Generates one plot per cohort
-- Exports full table for analysis
+VVD Vintage Curve Analysis - All 6 Campaigns
+- Test (TG4) vs Control comparison
+- Absolute Lift + 95% Confidence Interval
+- One plot per cohort
+- Measurement window = TREATMT_END_DT - TREATMT_STRT_DT
+
+Campaigns:
+- VCN, VDA: Acquisition (ISS_DT)
+- VDT: Activation (ACTV_DT)
+- VUI: Usage (TXN_DT from POS transactions)
+- VUT, VAW: Tokenization (TXN_DT from EDW token query)
 """
 
 from pyspark.sql import SparkSession
@@ -16,27 +22,57 @@ import numpy as np
 from scipy import stats
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION - ALL 6 CAMPAIGNS
 # =============================================================================
 
 CAMPAIGN_CONFIG = {
     "VCN": {
         "success_type": "ACQUISITION",
+        "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ISS_DT",
-        "window_days": 30,
+        "filters": None,
+        "description": "VVD Contextual Notification"
     },
     "VDA": {
         "success_type": "ACQUISITION",
+        "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ISS_DT",
-        "window_days": 90,
+        "filters": None,
+        "description": "VVD Black Friday Cyber Monday Targeted"
     },
     "VDT": {
         "success_type": "ACTIVATION",
+        "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ACTV_DT",
-        "window_days": 30,
+        "filters": None,
+        "description": "VVD Activation Trigger"
+    },
+    "VUI": {
+        "success_type": "USAGE",
+        "success_source": "HIVE",
+        "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_T_PT_OF_SALE_TXN/SNAP_DT=",
+        "success_date_field": "TXN_DT",
+        "filters": {"SRVC_CD": 36, "AMT1_GT": 0},  # SRVC_CD = 36 AND AMT1 > 0
+        "description": "VVD Usage Trigger"
+    },
+    "VUT": {
+        "success_type": "TOKENIZATION",
+        "success_source": "EDW",
+        "success_table_path": "/user/427966379/token.parquet",  # Pre-pulled from EDW
+        "success_date_field": "TXN_DT",
+        "filters": None,
+        "description": "VVD Tokenization Usage Campaign"
+    },
+    "VAW": {
+        "success_type": "TOKENIZATION",
+        "success_source": "EDW",
+        "success_table_path": "/user/427966379/token.parquet",  # Pre-pulled from EDW
+        "success_date_field": "TXN_DT",
+        "filters": None,
+        "description": "VVD Add To Wallet Contextual Notification"
     },
 }
 
@@ -45,11 +81,57 @@ CAMPAIGN_CONFIG = {
 # =============================================================================
 
 spark = SparkSession.builder \
-    .appName("VVD Vintage Curves - Test vs Control") \
+    .appName("VVD Vintage Curves - All Campaigns") \
     .getOrCreate()
 
 # =============================================================================
-# FUNCTIONS
+# EDW TOKEN QUERY (Run once, save to parquet)
+# =============================================================================
+
+def pull_token_data_from_edw():
+    """
+    Pull token provisioning data from EDW.
+    Run this once and save to parquet for reuse.
+    Assumes EDW connection is already established.
+    """
+    cursor = EDW.cursor()
+    
+    query = """
+    SELECT DISTINCT
+        SUBSTR(B.CLNT_CRD_NO, 7, 9) AS CLNT_NO,
+        B.TXN_DT
+    FROM DDWV05.CLNT_CRD_POS_LOG AS B
+    INNER JOIN DL_DECMAN.TOKEN_LIST C
+        ON B.TOKN_REQSTR_ID = C.TOKEN_ID
+    WHERE B.AMT1 = 0
+        AND SUBSTR(B.CLNT_CRD_NO, 1, 5) = '45190'
+        AND SUBSTR(B.VISA_DR_CRD_NO, 1, 5) = '45199'
+        AND SUBSTR(B.TOKN_REQSTR_ID, 1, 1) > '0'
+        AND B.POS_ENTR_MODE_CD_NON_EMV = '000'
+        AND B.SRVC_CD = 36
+        AND C.TOKEN_WALLET_IND = 'Y'
+    ORDER BY 1
+    """
+    
+    cursor.execute(query)
+    results = cursor.fetchall()
+    column_names = [desc[0] for desc in cursor.description]
+    
+    token_list_df = pd.DataFrame(results, columns=column_names)
+    token_list_df['CLNT_NO'] = token_list_df['CLNT_NO'].astype(int)
+    
+    cursor.close()
+    
+    # Convert to Spark and save
+    token_spark_df = spark.createDataFrame(token_list_df)
+    token_spark_df.write.parquet("/user/427966379/token.parquet", mode="overwrite")
+    
+    print(f"Token data saved: {token_spark_df.count():,} records")
+    return token_spark_df
+
+
+# =============================================================================
+# DATA LOADING FUNCTIONS
 # =============================================================================
 
 def load_tactic(mne):
@@ -58,24 +140,54 @@ def load_tactic(mne):
     return tactic.filter(F.col("MNE") == mne)
 
 
-def load_success_table(config, years=["2024", "2025"]):
-    """Load success table with year partitions."""
+def load_success_table_hive(config, years=["2024", "2025"]):
+    """Load success table from Hive with year partitions."""
     paths = [f"{config['success_table_path']}{year}*" for year in years]
-    return spark.read.parquet(*paths)
+    df = spark.read.parquet(*paths)
+    
+    # Apply filters if specified
+    if config.get("filters"):
+        filters = config["filters"]
+        if "SRVC_CD" in filters:
+            df = df.filter(F.col("SRVC_CD") == filters["SRVC_CD"])
+        if "AMT1_GT" in filters:
+            df = df.filter(F.col("AMT1") > filters["AMT1_GT"])
+    
+    return df
 
+
+def load_success_table_edw(config):
+    """Load token data from pre-pulled parquet (originally from EDW)."""
+    return spark.read.parquet(config["success_table_path"])
+
+
+def load_success_table(config):
+    """Load appropriate success table based on source."""
+    if config["success_source"] == "HIVE":
+        return load_success_table_hive(config)
+    elif config["success_source"] == "EDW":
+        return load_success_table_edw(config)
+    else:
+        raise ValueError(f"Unknown success source: {config['success_source']}")
+
+
+# =============================================================================
+# SUCCESS DETECTION
+# =============================================================================
 
 def detect_success(tactic_df, success_df, config):
     """
     Join tactic with success table to detect successes.
     Returns standardized DataFrame with success flags.
+    Uses TREATMT_END_DT - TREATMT_STRT_DT for measurement window.
     """
     # Get all tactic columns
     tactic_columns = tactic_df.columns
     
-    # Add measurement window and test/control flag
+    # Add measurement window from TREATMT_END_DT and test/control flag
     tactic_df = tactic_df.withColumn(
-        "measurement_end_dt",
-        F.date_add(F.col("TREATMT_STRT_DT"), config["window_days"])
+        "WINDOW_DAYS",
+        F.datediff(F.col("TREATMT_END_DT"), F.col("TREATMT_STRT_DT"))
     ).withColumn(
         "GROUP",
         F.when(F.col("TST_GRP_CD") == "TG4", "TEST").otherwise("CONTROL")
@@ -99,7 +211,7 @@ def detect_success(tactic_df, success_df, config):
         success_select,
         (F.col("t.CLNT_NO") == F.col("s.SUCCESS_CLNT_NO")) &
         (F.col("s.SUCCESS_DT") >= F.col("t.TREATMT_STRT_DT")) &
-        (F.col("s.SUCCESS_DT") <= F.col("t.measurement_end_dt")),
+        (F.col("s.SUCCESS_DT") <= F.col("t.TREATMT_END_DT")),
         how="left"
     )
     
@@ -113,7 +225,7 @@ def detect_success(tactic_df, success_df, config):
     )
     
     # Aggregate to client-deployment level
-    groupby_cols = [f"t.{col}" for col in tactic_columns] + ["measurement_end_dt", "GROUP", "COHORT"]
+    groupby_cols = [f"t.{col}" for col in tactic_columns] + ["WINDOW_DAYS", "GROUP", "COHORT"]
     
     result = joined.groupBy(groupby_cols).agg(
         F.max(F.when(F.col("s.SUCCESS_DT").isNotNull(), 1).otherwise(0)).alias("SUCCESS_FLAG"),
@@ -125,6 +237,10 @@ def detect_success(tactic_df, success_df, config):
     return result
 
 
+# =============================================================================
+# VINTAGE CURVE CALCULATIONS
+# =============================================================================
+
 def build_vintage_data(success_df):
     """
     Build vintage curve data from success DataFrame.
@@ -132,7 +248,8 @@ def build_vintage_data(success_df):
     """
     # Total clients per cohort and group
     totals = success_df.groupBy("COHORT", "GROUP").agg(
-        F.count("*").alias("TOTAL_CLIENTS")
+        F.count("*").alias("TOTAL_CLIENTS"),
+        F.max("WINDOW_DAYS").alias("WINDOW_DAYS")
     )
     
     # Successes by cohort, group, and day
@@ -173,9 +290,10 @@ def calculate_confidence_interval(test_successes, test_n, ctrl_successes, ctrl_n
     return lift, ci_lower, ci_upper
 
 
-def prepare_vintage_table(vintage_spark_df, window_days):
+def prepare_vintage_table(vintage_spark_df):
     """
     Convert to Pandas, calculate cumulative rates, lift, and CI.
+    Uses actual WINDOW_DAYS from data (not hardcoded).
     """
     pdf = vintage_spark_df.toPandas()
     
@@ -192,8 +310,7 @@ def prepare_vintage_table(vintage_spark_df, window_days):
     # Rename for clarity
     pdf = pdf.rename(columns={"DAYS_TO_FIRST_SUCCESS": "DAY"})
     
-    # Fill in missing days (0 to window_days) for complete curves
-    all_days = range(0, window_days + 1)
+    # Fill in missing days for complete curves
     cohorts = pdf["COHORT"].unique()
     groups = ["TEST", "CONTROL"]
     
@@ -206,11 +323,12 @@ def prepare_vintage_table(vintage_spark_df, window_days):
                 continue
             
             total_clients = cohort_group_data["TOTAL_CLIENTS"].iloc[0]
-            max_day = cohort_group_data["DAY"].max()
+            window_days = int(cohort_group_data["WINDOW_DAYS"].iloc[0])
+            max_day_with_data = cohort_group_data["DAY"].max()
             
             cum_successes = 0
-            for day in all_days:
-                if day > max_day:
+            for day in range(0, window_days + 1):
+                if day > max_day_with_data:
                     break  # Don't extrapolate beyond available data
                 
                 day_data = cohort_group_data[cohort_group_data["DAY"] == day]
@@ -221,6 +339,7 @@ def prepare_vintage_table(vintage_spark_df, window_days):
                     "COHORT": cohort,
                     "GROUP": group,
                     "DAY": day,
+                    "WINDOW_DAYS": window_days,
                     "TOTAL_CLIENTS": total_clients,
                     "CUMULATIVE_SUCCESSES": cum_successes,
                     "CUMULATIVE_RATE": cum_successes / total_clients * 100 if total_clients > 0 else 0
@@ -234,6 +353,11 @@ def prepare_vintage_table(vintage_spark_df, window_days):
         cohort_data = complete_df[complete_df["COHORT"] == cohort]
         test_data = cohort_data[cohort_data["GROUP"] == "TEST"]
         ctrl_data = cohort_data[cohort_data["GROUP"] == "CONTROL"]
+        
+        if test_data.empty or ctrl_data.empty:
+            continue
+        
+        window_days = int(test_data["WINDOW_DAYS"].iloc[0])
         
         for day in test_data["DAY"].unique():
             test_row = test_data[test_data["DAY"] == day]
@@ -254,6 +378,7 @@ def prepare_vintage_table(vintage_spark_df, window_days):
             lift_rows.append({
                 "COHORT": cohort,
                 "DAY": day,
+                "WINDOW_DAYS": window_days,
                 "TEST_CLIENTS": test_n,
                 "TEST_SUCCESSES": test_successes,
                 "TEST_RATE": test_row["CUMULATIVE_RATE"].iloc[0],
@@ -274,11 +399,20 @@ def prepare_vintage_table(vintage_spark_df, window_days):
     return lift_df
 
 
+# =============================================================================
+# PLOTTING FUNCTIONS (FIXED FOR OLDER MATPLOTLIB)
+# =============================================================================
+
 def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
     """
     Plot vintage curve for a single cohort - Test vs Control.
+    Fixed for older matplotlib versions (uses gridspec_kw).
     """
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), height_ratios=[2, 1])
+    # FIX: Use gridspec_kw instead of height_ratios directly
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), 
+                                    gridspec_kw={'height_ratios': [2, 1]})
+    
+    window_days = int(cohort_df["WINDOW_DAYS"].iloc[0])
     
     # --- Top plot: Conversion rates ---
     ax1.plot(
@@ -288,7 +422,7 @@ def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
         linewidth=2,
         markersize=4,
         color='#2E86AB',
-        label=f'Test (TG4) - n={cohort_df["TEST_CLIENTS"].iloc[0]:,}'
+        label=f'Test (TG4) - n={int(cohort_df["TEST_CLIENTS"].iloc[0]):,}'
     )
     ax1.plot(
         cohort_df["DAY"],
@@ -297,15 +431,15 @@ def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
         linewidth=2,
         markersize=4,
         color='#A23B72',
-        label=f'Control - n={cohort_df["CTRL_CLIENTS"].iloc[0]:,}'
+        label=f'Control - n={int(cohort_df["CTRL_CLIENTS"].iloc[0]):,}'
     )
     
     ax1.set_xlabel("Days from Treatment", fontsize=11)
     ax1.set_ylabel("Cumulative Conversion Rate (%)", fontsize=11)
-    ax1.set_title(f"{mne} Campaign - Cohort {cohort_name}\n{config['success_type']} Success | {config['window_days']}-Day Window", fontsize=13)
+    ax1.set_title(f"{mne} - {config['description']}\nCohort: {cohort_name} | {config['success_type']} | {window_days}-Day Window", fontsize=13)
     ax1.legend(loc='upper left', fontsize=10)
     ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, config['window_days'])
+    ax1.set_xlim(0, window_days)
     ax1.set_ylim(0, None)
     
     # Add final rates annotation
@@ -348,7 +482,7 @@ def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
     ax2.set_title("Absolute Lift (Test - Control) with 95% Confidence Interval", fontsize=11)
     ax2.legend(loc='upper left', fontsize=9)
     ax2.grid(True, alpha=0.3)
-    ax2.set_xlim(0, config['window_days'])
+    ax2.set_xlim(0, window_days)
     
     # Add final lift annotation
     ax2.annotate(
@@ -363,18 +497,23 @@ def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"Plot saved: {save_path}")
+    print(f"    Plot saved: {save_path}")
 
 
-def generate_summary_table(lift_df):
+def generate_summary_table(lift_df, mne):
     """
     Generate summary table with final rates per cohort.
     """
+    if lift_df.empty:
+        return pd.DataFrame()
+    
     # Get max day per cohort (final measurement)
     final_rates = lift_df.loc[lift_df.groupby("COHORT")["DAY"].idxmax()].copy()
     
+    final_rates["MNE"] = mne
+    
     final_rates = final_rates[[
-        "COHORT", "TEST_CLIENTS", "TEST_SUCCESSES", "TEST_RATE",
+        "MNE", "COHORT", "WINDOW_DAYS", "TEST_CLIENTS", "TEST_SUCCESSES", "TEST_RATE",
         "CTRL_CLIENTS", "CTRL_SUCCESSES", "CTRL_RATE",
         "ABS_LIFT", "CI_LOWER", "CI_UPPER", "SIGNIFICANT"
     ]].sort_values("COHORT")
@@ -395,11 +534,19 @@ def run_vintage_analysis(mne):
     print(f"{'='*60}")
     
     config = CAMPAIGN_CONFIG[mne]
+    print(f"Campaign: {config['description']}")
+    print(f"Success Type: {config['success_type']}")
+    print(f"Source: {config['success_source']}")
     
     # Step 1: Load data
     print("\n[1] Loading tactic data...")
     tactic_df = load_tactic(mne)
-    print(f"    Tactic records: {tactic_df.count():,}")
+    tactic_count = tactic_df.count()
+    print(f"    Tactic records: {tactic_count:,}")
+    
+    if tactic_count == 0:
+        print(f"    WARNING: No tactic records found for {mne}. Skipping.")
+        return None, None
     
     print("\n[2] Loading success table...")
     success_table = load_success_table(config)
@@ -410,7 +557,7 @@ def run_vintage_analysis(mne):
     success_df.persist(StorageLevel.MEMORY_AND_DISK)
     
     # Summary
-    print("\n[4] Success summary:")
+    print("\n[4] Success summary by group:")
     success_df.groupBy("GROUP").agg(
         F.count("*").alias("TOTAL"),
         F.sum("SUCCESS_FLAG").alias("SUCCESSES"),
@@ -423,15 +570,16 @@ def run_vintage_analysis(mne):
     
     # Step 4: Calculate lift and CI
     print("\n[6] Calculating lift and confidence intervals...")
-    vintage_table = prepare_vintage_table(vintage_spark, config["window_days"])
+    vintage_table = prepare_vintage_table(vintage_spark)
     
     if vintage_table.empty:
-        print("WARNING: No vintage data generated!")
+        print("    WARNING: No vintage data generated!")
         return None, None
     
     # Step 5: Generate plots for each cohort
     print("\n[7] Generating plots...")
     cohorts = sorted(vintage_table["COHORT"].unique())
+    print(f"    Found {len(cohorts)} cohorts")
     
     for cohort in cohorts:
         cohort_df = vintage_table[vintage_table["COHORT"] == cohort]
@@ -440,32 +588,63 @@ def run_vintage_analysis(mne):
     
     # Step 6: Generate summary table
     print("\n[8] Summary Table (Final Rates by Cohort):")
-    summary_table = generate_summary_table(vintage_table)
+    summary_table = generate_summary_table(vintage_table, mne)
     print(summary_table.to_string(index=False))
     
     # Step 7: Save outputs
     print("\n[9] Saving outputs...")
+    vintage_table["MNE"] = mne
     vintage_table.to_csv(f"/user/427966379/{mne}_vintage_full.csv", index=False)
     summary_table.to_csv(f"/user/427966379/{mne}_vintage_summary.csv", index=False)
     print(f"    Full table: /user/427966379/{mne}_vintage_full.csv")
     print(f"    Summary: /user/427966379/{mne}_vintage_summary.csv")
     
+    # Unpersist
+    success_df.unpersist()
+    
     return vintage_table, summary_table
 
 
 # =============================================================================
-# RUN FOR EACH CAMPAIGN
+# RUN ALL CAMPAIGNS
 # =============================================================================
 
 if __name__ == "__main__":
-    # Run for VCN (Acquisition - 30 days)
-    vcn_vintage, vcn_summary = run_vintage_analysis("VCN")
     
-    # Run for VDA (Acquisition - 90 days)
-    # vda_vintage, vda_summary = run_vintage_analysis("VDA")
+    # Store all results
+    all_vintage_tables = []
+    all_summary_tables = []
     
-    # Run for VDT (Activation - 30 days)
-    # vdt_vintage, vdt_summary = run_vintage_analysis("VDT")
+    # Run for each campaign
+    for mne in ["VCN", "VDA", "VDT", "VUI", "VUT", "VAW"]:
+        try:
+            vintage_table, summary_table = run_vintage_analysis(mne)
+            if vintage_table is not None:
+                all_vintage_tables.append(vintage_table)
+                all_summary_tables.append(summary_table)
+        except Exception as e:
+            print(f"\n*** ERROR processing {mne}: {str(e)} ***\n")
+            continue
+    
+    # Combine all results
+    if all_vintage_tables:
+        print("\n" + "="*60)
+        print("COMBINING ALL CAMPAIGN RESULTS")
+        print("="*60)
+        
+        combined_vintage = pd.concat(all_vintage_tables, ignore_index=True)
+        combined_summary = pd.concat(all_summary_tables, ignore_index=True)
+        
+        combined_vintage.to_csv("/user/427966379/ALL_CAMPAIGNS_vintage_full.csv", index=False)
+        combined_summary.to_csv("/user/427966379/ALL_CAMPAIGNS_vintage_summary.csv", index=False)
+        
+        print(f"\nCombined full table: /user/427966379/ALL_CAMPAIGNS_vintage_full.csv")
+        print(f"Combined summary: /user/427966379/ALL_CAMPAIGNS_vintage_summary.csv")
+        
+        print("\n" + "="*60)
+        print("FINAL SUMMARY - ALL CAMPAIGNS")
+        print("="*60)
+        print(combined_summary.to_string(index=False))
     
     print("\n" + "="*60)
     print("ANALYSIS COMPLETE")
