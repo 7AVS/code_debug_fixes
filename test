@@ -1,6 +1,6 @@
 """
-VVD Campaign Deployment Inventory
-Count waves/cohorts per campaign to plan visualizations
+VVD Date Range Analysis
+Check date ranges per campaign to plan hybrid aggregation strategy
 """
 
 from pyspark.sql import SparkSession
@@ -8,36 +8,21 @@ from pyspark.sql import functions as F
 
 # Initialize Spark
 spark = SparkSession.builder \
-    .appName("VVD Deployment Inventory") \
+    .appName("VVD Date Range Analysis") \
     .getOrCreate()
 
 # Load tactic
 tactic = spark.read.parquet("/user/427966379/tactic.parquet")
 
-print("="*70)
-print("VVD CAMPAIGN DEPLOYMENT INVENTORY")
-print("="*70)
+print("="*80)
+print("VVD DATE RANGE ANALYSIS - FOR HYBRID AGGREGATION PLANNING")
+print("="*80)
 
-# Count deployments (unique TREATMT_STRT_DT) per MNE
-print("\n1. DEPLOYMENTS PER CAMPAIGN (Unique Treatment Start Dates)")
-print("-"*70)
-
-deployment_counts = tactic.groupBy("MNE").agg(
-    F.countDistinct("TREATMT_STRT_DT").alias("NUM_DEPLOYMENTS"),
-    F.count("*").alias("TOTAL_RECORDS"),
-    F.countDistinct("CLNT_NO").alias("UNIQUE_CLIENTS"),
-    F.min("TREATMT_STRT_DT").alias("FIRST_DEPLOYMENT"),
-    F.max("TREATMT_STRT_DT").alias("LAST_DEPLOYMENT")
-).orderBy("MNE")
-
-deployment_counts.show(truncate=False)
-
-# Detailed breakdown per campaign
-print("\n2. DETAILED BREAKDOWN BY CAMPAIGN")
-print("-"*70)
-
+# For each campaign, show date distribution
 for mne in ["VCN", "VDA", "VDT", "VUI", "VUT", "VAW"]:
-    print(f"\n>>> {mne} <<<")
+    print(f"\n{'='*80}")
+    print(f">>> {mne} <<<")
+    print("="*80)
     
     mne_data = tactic.filter(F.col("MNE") == mne)
     
@@ -45,38 +30,67 @@ for mne in ["VCN", "VDA", "VDT", "VUI", "VUT", "VAW"]:
         print(f"    No data found for {mne}")
         continue
     
-    # Deployments by date
-    deployments = mne_data.groupBy("TREATMT_STRT_DT").agg(
-        F.count("*").alias("TOTAL_CLIENTS"),
-        F.countDistinct("TST_GRP_CD").alias("NUM_TEST_GROUPS"),
-        F.sum(F.when(F.col("TST_GRP_CD") == "TG4", 1).otherwise(0)).alias("TEST_COUNT"),
-        F.sum(F.when(F.col("TST_GRP_CD") != "TG4", 1).otherwise(0)).alias("CONTROL_COUNT")
-    ).orderBy("TREATMT_STRT_DT")
+    # Overall range
+    range_info = mne_data.agg(
+        F.min("TREATMT_STRT_DT").alias("EARLIEST"),
+        F.max("TREATMT_STRT_DT").alias("LATEST"),
+        F.countDistinct("TREATMT_STRT_DT").alias("TOTAL_WAVES")
+    ).collect()[0]
     
-    deployments.show(50, truncate=False)
+    print(f"\nDate Range: {range_info['EARLIEST']} to {range_info['LATEST']}")
+    print(f"Total Waves: {range_info['TOTAL_WAVES']}")
+    
+    # Group by YEAR-MONTH to see distribution
+    print(f"\nDeployments by Year-Month:")
+    print("-"*60)
+    
+    monthly = mne_data.withColumn(
+        "YEAR_MONTH", F.date_format(F.col("TREATMT_STRT_DT"), "yyyy-MM")
+    ).groupBy("YEAR_MONTH").agg(
+        F.countDistinct("TREATMT_STRT_DT").alias("WAVES_IN_MONTH"),
+        F.count("*").alias("TOTAL_CLIENTS"),
+        F.sum(F.when(F.col("TST_GRP_CD") == "TG4", 1).otherwise(0)).alias("TEST"),
+        F.sum(F.when(F.col("TST_GRP_CD") != "TG4", 1).otherwise(0)).alias("CONTROL")
+    ).orderBy("YEAR_MONTH")
+    
+    monthly.show(50, truncate=False)
+    
+    # Group by YEAR
+    print(f"\nDeployments by Year:")
+    print("-"*60)
+    
+    yearly = mne_data.withColumn(
+        "YEAR", F.year(F.col("TREATMT_STRT_DT"))
+    ).groupBy("YEAR").agg(
+        F.countDistinct("TREATMT_STRT_DT").alias("WAVES_IN_YEAR"),
+        F.count("*").alias("TOTAL_CLIENTS")
+    ).orderBy("YEAR")
+    
+    yearly.show(truncate=False)
 
-# Summary for planning
-print("\n3. SUMMARY FOR VISUALIZATION PLANNING")
-print("-"*70)
+print("\n" + "="*80)
+print("HYBRID AGGREGATION RECOMMENDATION")
+print("="*80)
+print("""
+PROPOSED STRATEGY:
+------------------
+For campaigns with many waves, use time-based aggregation:
 
-summary = tactic.groupBy("MNE").agg(
-    F.countDistinct("TREATMT_STRT_DT").alias("WAVES")
-).orderBy("MNE")
+Option A - By recency:
+  - OLD (> 6 months ago): Aggregate by QUARTER (e.g., "2024-Q3")
+  - RECENT (last 6 months): Keep individual MONTH cohorts
 
-summary_list = summary.collect()
+Option B - By year:
+  - 2024 data: Aggregate into single "2024" cohort
+  - 2025 data: Keep monthly or individual waves
 
-print("\n| MNE | # Waves | Recommended Plot Style |")
-print("|-----|---------|------------------------|")
-for row in summary_list:
-    waves = row["WAVES"]
-    if waves <= 6:
-        style = "Single plot, all cohorts"
-    elif waves <= 12:
-        style = "Single plot OR grid (3x4)"
-    else:
-        style = "Consider filtering recent only"
-    print(f"| {row['MNE']} | {waves:>7} | {style} |")
+Option C - Rolling window:
+  - Always show last N waves (e.g., last 12)
+  - Ignore older data
 
-print("\n" + "="*70)
-print("INVENTORY COMPLETE")
-print("="*70)
+Which approach do you prefer?
+""")
+
+print("="*80)
+print("ANALYSIS COMPLETE")
+print("="*80)
