@@ -4,6 +4,7 @@ VVD Vintage Curve Analysis - All 6 Campaigns
 
 UNIVERSAL STANDARDS:
 - Aggregation: MONTH level (yyyy-MM) - never weekly/daily
+- Years: 2025 and 2026 only (exclude older data)
 - Test (TG4) vs Control on same plot
 - Same color per cohort: solid = Test, dashed = Control
 - One plot per campaign
@@ -156,16 +157,34 @@ def pull_token_data_from_edw():
 
 
 # =============================================================================
+# STANDARD CONFIGURATION
+# =============================================================================
+
+# Universal aggregation rule - MONTH level for all campaigns
+AGGREGATION_LEVEL = "MONTH"  # Always yyyy-MM, never weekly/daily
+
+# Year filter - only include these years
+YEARS_TO_INCLUDE = [2025, 2026]
+
+
+# =============================================================================
 # DATA LOADING FUNCTIONS
 # =============================================================================
 
 def load_tactic(mne):
-    """Load tactic data and filter for specific campaign."""
+    """Load tactic data and filter for specific campaign and years."""
     tactic = spark.read.parquet("/user/427966379/tactic.parquet")
-    return tactic.filter(F.col("MNE") == mne)
+    
+    # Filter by MNE and YEARS (2025, 2026 only)
+    tactic = tactic.filter(
+        (F.col("MNE") == mne) &
+        (F.year(F.col("TREATMT_STRT_DT")).isin(YEARS_TO_INCLUDE))
+    )
+    
+    return tactic
 
 
-def load_success_table_hive(config, years=["2024", "2025"]):
+def load_success_table_hive(config, years=["2025", "2026"]):
     """Load success table from Hive with year partitions and apply filters."""
     paths = [f"{config['success_table_path']}{year}*" for year in years]
     df = spark.read.parquet(*paths)
@@ -239,14 +258,6 @@ def load_success_table(config):
         return load_success_table_edw(config)
     else:
         raise ValueError(f"Unknown success source: {config['success_source']}")
-
-
-# =============================================================================
-# STANDARD CONFIGURATION
-# =============================================================================
-
-# Universal aggregation rule - MONTH level for all campaigns
-AGGREGATION_LEVEL = "MONTH"  # Always yyyy-MM, never weekly/daily
 
 
 # =============================================================================
@@ -547,4 +558,237 @@ def plot_campaign_vintage(vintage_df, mne, config, save_path):
     ax.legend(title="Cohort / Group", bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, None)
-  
+    ax.set_ylim(0, None)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    
+    print(f"    Plot saved: {save_path}")
+
+
+def plot_test_vs_control_by_cohort(vintage_df, mne, config, save_path):
+    """
+    Alternative view: One subplot per cohort showing Test vs Control.
+    Useful when you have fewer cohorts and want to compare directly.
+    """
+    cohorts = sorted(vintage_df["COHORT"].unique())
+    n_cohorts = len(cohorts)
+    
+    if n_cohorts == 0:
+        print(f"    WARNING: No cohorts to plot for {mne}")
+        return
+    
+    # Calculate grid dimensions
+    n_cols = min(3, n_cohorts)
+    n_rows = (n_cohorts + n_cols - 1) // n_cols
+    
+    # FIX: Limit figure size
+    fig_width = min(5 * n_cols, 15)
+    fig_height = min(4 * n_rows, 12)
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    
+    for idx, cohort in enumerate(cohorts):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+        
+        cohort_data = vintage_df[vintage_df["COHORT"] == cohort]
+        if cohort_data.empty:
+            continue
+        
+        window_days = int(cohort_data["WINDOW_DAYS"].iloc[0])
+        final_row = cohort_data[cohort_data["DAY"] == cohort_data["DAY"].max()].iloc[0]
+        
+        # Plot Test and Control
+        ax.plot(cohort_data["DAY"], cohort_data["TEST_RATE"], 
+                marker='o', linewidth=1.5, markersize=3, color='#2E86AB',
+                label=f'Test (n={int(final_row["TEST_CLIENTS"]):,})')
+        ax.plot(cohort_data["DAY"], cohort_data["CTRL_RATE"], 
+                marker='s', linewidth=1.5, markersize=3, color='#A23B72',
+                label=f'Control (n={int(final_row["CTRL_CLIENTS"]):,})')
+        
+        # Add lift annotation
+        ax.annotate(
+            f'Lift: {final_row["ABS_LIFT"]:.2f}pp\n[{final_row["CI_LOWER"]:.2f}, {final_row["CI_UPPER"]:.2f}]',
+            xy=(0.95, 0.05), xycoords='axes fraction',
+            fontsize=8, ha='right', va='bottom',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+        )
+        
+        ax.set_title(f'Cohort: {cohort}', fontsize=10)
+        ax.set_xlabel("Days", fontsize=9)
+        ax.set_ylabel("Rate (%)", fontsize=9)
+        ax.legend(fontsize=7, loc='upper left')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, window_days)
+        ax.set_ylim(0, None)
+    
+    # Hide empty subplots
+    for idx in range(n_cohorts, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].set_visible(False)
+    
+    fig.suptitle(f"{mne} - {config['description']} | {config['success_type']}", fontsize=13, y=1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    
+    print(f"    Plot saved: {save_path}")
+
+
+def generate_summary_table(lift_df, mne):
+    """
+    Generate summary table with final rates per cohort.
+    """
+    if lift_df.empty:
+        return pd.DataFrame()
+    
+    # Get max day per cohort (final measurement)
+    final_rates = lift_df.loc[lift_df.groupby("COHORT")["DAY"].idxmax()].copy()
+    
+    final_rates["MNE"] = mne
+    
+    final_rates = final_rates[[
+        "MNE", "COHORT", "WINDOW_DAYS", "TEST_CLIENTS", "TEST_SUCCESSES", "TEST_RATE",
+        "CTRL_CLIENTS", "CTRL_SUCCESSES", "CTRL_RATE",
+        "ABS_LIFT", "CI_LOWER", "CI_UPPER", "SIGNIFICANT"
+    ]].sort_values("COHORT")
+    
+    return final_rates
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+def run_vintage_analysis(mne):
+    """
+    Run full vintage analysis for a campaign.
+    """
+    print(f"\n{'='*60}")
+    print(f"Running Vintage Analysis for {mne}")
+    print(f"{'='*60}")
+    
+    config = CAMPAIGN_CONFIG[mne]
+    print(f"Campaign: {config['description']}")
+    print(f"Success Type: {config['success_type']}")
+    print(f"Source: {config['success_source']}")
+    
+    # Step 1: Load data
+    print("\n[1] Loading tactic data...")
+    tactic_df = load_tactic(mne)
+    tactic_count = tactic_df.count()
+    print(f"    Tactic records: {tactic_count:,}")
+    
+    if tactic_count == 0:
+        print(f"    WARNING: No tactic records found for {mne}. Skipping.")
+        return None, None
+    
+    print("\n[2] Loading success table...")
+    success_table = load_success_table(config)
+    
+    # Step 2: Detect success
+    print("\n[3] Detecting success...")
+    success_df = detect_success(tactic_df, success_table, config)
+    success_df.persist(StorageLevel.MEMORY_AND_DISK)
+    
+    # Summary
+    print("\n[4] Success summary by group:")
+    success_df.groupBy("GROUP").agg(
+        F.count("*").alias("TOTAL"),
+        F.sum("SUCCESS_FLAG").alias("SUCCESSES"),
+        F.avg("SUCCESS_FLAG").alias("SUCCESS_RATE")
+    ).show()
+    
+    # Step 3: Build vintage data
+    print("\n[5] Building vintage curves...")
+    vintage_spark = build_vintage_data(success_df)
+    
+    # Step 4: Calculate lift and CI
+    print("\n[6] Calculating lift and confidence intervals...")
+    vintage_table = prepare_vintage_table(vintage_spark)
+    
+    if vintage_table.empty:
+        print("    WARNING: No vintage data generated!")
+        return None, None
+    
+    # Step 5: Generate plots - ALL cohorts on one chart per campaign
+    print("\n[7] Generating plots...")
+    cohorts = sorted(vintage_table["COHORT"].unique())
+    print(f"    Found {len(cohorts)} cohorts")
+    
+    # Plot 1: All cohorts - Test curves on top, Control curves on bottom
+    save_path_1 = f"/user/427966379/{mne}_vintage_all_cohorts.png"
+    plot_campaign_vintage(vintage_table, mne, config, save_path_1)
+    
+    # Plot 2: Grid view - one subplot per cohort with Test vs Control
+    if len(cohorts) <= 12:  # Only if not too many cohorts
+        save_path_2 = f"/user/427966379/{mne}_vintage_grid.png"
+        plot_test_vs_control_by_cohort(vintage_table, mne, config, save_path_2)
+    
+    # Step 6: Generate summary table
+    print("\n[8] Summary Table (Final Rates by Cohort):")
+    summary_table = generate_summary_table(vintage_table, mne)
+    print(summary_table.to_string(index=False))
+    
+    # Step 7: Save outputs
+    print("\n[9] Saving outputs...")
+    vintage_table["MNE"] = mne
+    vintage_table.to_csv(f"/user/427966379/{mne}_vintage_full.csv", index=False)
+    summary_table.to_csv(f"/user/427966379/{mne}_vintage_summary.csv", index=False)
+    print(f"    Full table: /user/427966379/{mne}_vintage_full.csv")
+    print(f"    Summary: /user/427966379/{mne}_vintage_summary.csv")
+    
+    # Unpersist
+    success_df.unpersist()
+    
+    return vintage_table, summary_table
+
+
+# =============================================================================
+# RUN ALL CAMPAIGNS
+# =============================================================================
+
+if __name__ == "__main__":
+    
+    # Store all results
+    all_vintage_tables = []
+    all_summary_tables = []
+    
+    # Run for each campaign
+    for mne in ["VCN", "VDA", "VDT", "VUI", "VUT", "VAW"]:
+        try:
+            vintage_table, summary_table = run_vintage_analysis(mne)
+            if vintage_table is not None:
+                all_vintage_tables.append(vintage_table)
+                all_summary_tables.append(summary_table)
+        except Exception as e:
+            print(f"\n*** ERROR processing {mne}: {str(e)} ***\n")
+            continue
+    
+    # Combine all results
+    if all_vintage_tables:
+        print("\n" + "="*60)
+        print("COMBINING ALL CAMPAIGN RESULTS")
+        print("="*60)
+        
+        combined_vintage = pd.concat(all_vintage_tables, ignore_index=True)
+        combined_summary = pd.concat(all_summary_tables, ignore_index=True)
+        
+        combined_vintage.to_csv("/user/427966379/ALL_CAMPAIGNS_vintage_full.csv", index=False)
+        combined_summary.to_csv("/user/427966379/ALL_CAMPAIGNS_vintage_summary.csv", index=False)
+        
+        print(f"\nCombined full table: /user/427966379/ALL_CAMPAIGNS_vintage_full.csv")
+        print(f"Combined summary: /user/427966379/ALL_CAMPAIGNS_vintage_summary.csv")
+        
+        print("\n" + "="*60)
+        print("FINAL SUMMARY - ALL CAMPAIGNS")
+        print("="*60)
+        print(combined_summary.to_string(index=False))
+    
+    print("\n" + "="*60)
+    print("ANALYSIS COMPLETE")
+    print("="*60)
