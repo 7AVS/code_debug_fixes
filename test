@@ -31,7 +31,11 @@ CAMPAIGN_CONFIG = {
         "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ISS_DT",
-        "filters": None,
+        "filters": {
+            "STS_CD": ["06", "08"],      # Status codes
+            "SRVC_ID": 36,                # Service ID
+            "ISS_DT_NOT_NULL": True       # Issue date not null
+        },
         "description": "VVD Contextual Notification"
     },
     "VDA": {
@@ -39,7 +43,11 @@ CAMPAIGN_CONFIG = {
         "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ISS_DT",
-        "filters": None,
+        "filters": {
+            "STS_CD": ["06", "08"],
+            "SRVC_ID": 36,
+            "ISS_DT_NOT_NULL": True
+        },
         "description": "VVD Black Friday Cyber Monday Targeted"
     },
     "VDT": {
@@ -47,7 +55,11 @@ CAMPAIGN_CONFIG = {
         "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_VISA_DR_CRD/PartitionColumn=Latest/CAPTR_DT=",
         "success_date_field": "ACTV_DT",
-        "filters": None,
+        "filters": {
+            "STS_CD": ["06", "08"],
+            "SRVC_ID": 36,
+            "ISS_DT_NOT_NULL": True
+        },
         "description": "VVD Activation Trigger"
     },
     "VUI": {
@@ -55,7 +67,16 @@ CAMPAIGN_CONFIG = {
         "success_source": "HIVE",
         "success_table_path": "/prod/sz/tsz/00050/data/DDWTA_T_PT_OF_SALE_TXN/SNAP_DT=",
         "success_date_field": "TXN_DT",
-        "filters": {"SRVC_CD": 36, "AMT1_GT": 0},  # SRVC_CD = 36 AND AMT1 > 0
+        "filters": {
+            "SRVC_CD": 36,
+            "TXN_TYPES": [
+                {"TXN_TP": 10, "MSG_TP": "0210"},
+                {"TXN_TP": 13, "MSG_TP": "0210"},
+                {"TXN_TP": 12, "MSG_TP": "0220"}
+            ],
+            "AMT1_GT": 0,
+            "EXTRACT_CLNT_NO": True  # Extract CLNT_NO from CLNT_CRD_NO
+        },
         "description": "VVD Usage Trigger"
     },
     "VUT": {
@@ -141,17 +162,62 @@ def load_tactic(mne):
 
 
 def load_success_table_hive(config, years=["2024", "2025"]):
-    """Load success table from Hive with year partitions."""
+    """Load success table from Hive with year partitions and apply filters."""
     paths = [f"{config['success_table_path']}{year}*" for year in years]
     df = spark.read.parquet(*paths)
     
     # Apply filters if specified
     if config.get("filters"):
         filters = config["filters"]
+        
+        # STS_CD filter (for activation/acquisition)
+        if "STS_CD" in filters:
+            df = df.filter(F.col("STS_CD").isin(filters["STS_CD"]))
+        
+        # SRVC_ID filter (for activation/acquisition - note: SRVC_ID not SRVC_CD)
+        if "SRVC_ID" in filters:
+            df = df.filter(F.col("SRVC_ID") == filters["SRVC_ID"])
+        
+        # SRVC_CD filter (for usage)
         if "SRVC_CD" in filters:
             df = df.filter(F.col("SRVC_CD") == filters["SRVC_CD"])
+        
+        # Complex TXN_TYPES filter (for usage) - TXN_TP and MSG_TP combinations
+        if "TXN_TYPES" in filters:
+            txn_conditions = None
+            for txn_type in filters["TXN_TYPES"]:
+                condition = (F.col("TXN_TP") == txn_type["TXN_TP"]) & (F.col("MSG_TP") == txn_type["MSG_TP"])
+                if txn_conditions is None:
+                    txn_conditions = condition
+                else:
+                    txn_conditions = txn_conditions | condition
+            df = df.filter(txn_conditions)
+        
+        # ISS_DT not null filter
+        if filters.get("ISS_DT_NOT_NULL"):
+            df = df.filter(F.col("ISS_DT").isNotNull())
+        
+        # AMT1 > 0 filter (for usage)
         if "AMT1_GT" in filters:
             df = df.filter(F.col("AMT1") > filters["AMT1_GT"])
+        
+        # Extract CLNT_NO from CLNT_CRD_NO (for usage table)
+        if filters.get("EXTRACT_CLNT_NO"):
+            df = df.withColumn(
+                "CLNT_NO",
+                F.regexp_replace(F.substring(F.col("CLNT_CRD_NO"), 7, 9), "^0+", "")
+            ).withColumn(
+                "POS_MODE",
+                F.substring(F.col("POS_ENTRY_MODE_CD_NON_EMV"), 1, 2)
+            )
+    
+    # Add Card_Type for activation/acquisition tables
+    if config["success_type"] in ["ACQUISITION", "ACTIVATION"]:
+        df = df.withColumn(
+            "Card_Type",
+            F.when(F.col("VISA_DR_CRD_BRND_CD") == "03", "Digital")
+            .otherwise("Hybrid/Plastic")
+        )
     
     return df
 
@@ -403,98 +469,157 @@ def prepare_vintage_table(vintage_spark_df):
 # PLOTTING FUNCTIONS (FIXED FOR OLDER MATPLOTLIB)
 # =============================================================================
 
-def plot_cohort_vintage(cohort_df, cohort_name, mne, config, save_path):
+def plot_campaign_vintage(vintage_df, mne, config, save_path):
     """
-    Plot vintage curve for a single cohort - Test vs Control.
-    Fixed for older matplotlib versions (uses gridspec_kw).
+    Plot vintage curves for ALL cohorts on one chart per campaign.
+    - Top panel: Test (TG4) curves - one line per cohort
+    - Bottom panel: Control curves - one line per cohort
     """
-    # FIX: Use gridspec_kw instead of height_ratios directly
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), 
-                                    gridspec_kw={'height_ratios': [2, 1]})
+    if vintage_df.empty:
+        print(f"    WARNING: No data to plot for {mne}")
+        return
     
-    window_days = int(cohort_df["WINDOW_DAYS"].iloc[0])
+    # FIX: Use reasonable figure size
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), 
+                                    gridspec_kw={'height_ratios': [1, 1]})
     
-    # --- Top plot: Conversion rates ---
-    ax1.plot(
-        cohort_df["DAY"],
-        cohort_df["TEST_RATE"],
-        marker='o',
-        linewidth=2,
-        markersize=4,
-        color='#2E86AB',
-        label=f'Test (TG4) - n={int(cohort_df["TEST_CLIENTS"].iloc[0]):,}'
-    )
-    ax1.plot(
-        cohort_df["DAY"],
-        cohort_df["CTRL_RATE"],
-        marker='s',
-        linewidth=2,
-        markersize=4,
-        color='#A23B72',
-        label=f'Control - n={int(cohort_df["CTRL_CLIENTS"].iloc[0]):,}'
-    )
+    # Get unique cohorts and assign colors
+    cohorts = sorted(vintage_df["COHORT"].unique())
+    colors = plt.cm.tab10(np.linspace(0, 1, min(len(cohorts), 10)))
+    
+    # If more than 10 cohorts, cycle colors
+    if len(cohorts) > 10:
+        colors = plt.cm.tab20(np.linspace(0, 1, min(len(cohorts), 20)))
+    
+    # --- Top plot: TEST (TG4) curves ---
+    for i, cohort in enumerate(cohorts):
+        cohort_data = vintage_df[vintage_df["COHORT"] == cohort]
+        if cohort_data.empty:
+            continue
+        
+        color = colors[i % len(colors)]
+        window_days = int(cohort_data["WINDOW_DAYS"].iloc[0])
+        
+        ax1.plot(
+            cohort_data["DAY"],
+            cohort_data["TEST_RATE"],
+            marker='o',
+            linewidth=1.5,
+            markersize=3,
+            color=color,
+            label=f'{cohort} (n={int(cohort_data["TEST_CLIENTS"].iloc[0]):,})',
+            alpha=0.8
+        )
     
     ax1.set_xlabel("Days from Treatment", fontsize=11)
     ax1.set_ylabel("Cumulative Conversion Rate (%)", fontsize=11)
-    ax1.set_title(f"{mne} - {config['description']}\nCohort: {cohort_name} | {config['success_type']} | {window_days}-Day Window", fontsize=13)
-    ax1.legend(loc='upper left', fontsize=10)
+    ax1.set_title(f"{mne} - {config['description']}\nTEST (TG4) Vintage Curves by Cohort | {config['success_type']}", fontsize=12)
+    ax1.legend(title="Cohort", bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
     ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, window_days)
+    ax1.set_xlim(0, None)
     ax1.set_ylim(0, None)
     
-    # Add final rates annotation
-    final_row = cohort_df[cohort_df["DAY"] == cohort_df["DAY"].max()].iloc[0]
-    ax1.annotate(
-        f'Test: {final_row["TEST_RATE"]:.2f}%',
-        xy=(final_row["DAY"], final_row["TEST_RATE"]),
-        xytext=(final_row["DAY"] - 5, final_row["TEST_RATE"] + 0.3),
-        fontsize=9, color='#2E86AB'
-    )
-    ax1.annotate(
-        f'Ctrl: {final_row["CTRL_RATE"]:.2f}%',
-        xy=(final_row["DAY"], final_row["CTRL_RATE"]),
-        xytext=(final_row["DAY"] - 5, final_row["CTRL_RATE"] - 0.3),
-        fontsize=9, color='#A23B72'
-    )
-    
-    # --- Bottom plot: Absolute Lift with CI ---
-    ax2.plot(
-        cohort_df["DAY"],
-        cohort_df["ABS_LIFT"],
-        marker='o',
-        linewidth=2,
-        markersize=4,
-        color='#28A745',
-        label='Absolute Lift'
-    )
-    ax2.fill_between(
-        cohort_df["DAY"],
-        cohort_df["CI_LOWER"],
-        cohort_df["CI_UPPER"],
-        alpha=0.3,
-        color='#28A745',
-        label='95% CI'
-    )
-    ax2.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.7)
+    # --- Bottom plot: CONTROL curves ---
+    for i, cohort in enumerate(cohorts):
+        cohort_data = vintage_df[vintage_df["COHORT"] == cohort]
+        if cohort_data.empty:
+            continue
+        
+        color = colors[i % len(colors)]
+        
+        ax2.plot(
+            cohort_data["DAY"],
+            cohort_data["CTRL_RATE"],
+            marker='s',
+            linewidth=1.5,
+            markersize=3,
+            color=color,
+            label=f'{cohort} (n={int(cohort_data["CTRL_CLIENTS"].iloc[0]):,})',
+            alpha=0.8
+        )
     
     ax2.set_xlabel("Days from Treatment", fontsize=11)
-    ax2.set_ylabel("Absolute Lift (pp)", fontsize=11)
-    ax2.set_title("Absolute Lift (Test - Control) with 95% Confidence Interval", fontsize=11)
-    ax2.legend(loc='upper left', fontsize=9)
+    ax2.set_ylabel("Cumulative Conversion Rate (%)", fontsize=11)
+    ax2.set_title(f"CONTROL Vintage Curves by Cohort", fontsize=12)
+    ax2.legend(title="Cohort", bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=8)
     ax2.grid(True, alpha=0.3)
-    ax2.set_xlim(0, window_days)
-    
-    # Add final lift annotation
-    ax2.annotate(
-        f'Lift: {final_row["ABS_LIFT"]:.2f}pp\nCI: [{final_row["CI_LOWER"]:.2f}, {final_row["CI_UPPER"]:.2f}]',
-        xy=(final_row["DAY"], final_row["ABS_LIFT"]),
-        xytext=(final_row["DAY"] - 8, final_row["ABS_LIFT"]),
-        fontsize=9, color='#28A745',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-    )
+    ax2.set_xlim(0, None)
+    ax2.set_ylim(0, None)
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    
+    print(f"    Plot saved: {save_path}")
+
+
+def plot_test_vs_control_by_cohort(vintage_df, mne, config, save_path):
+    """
+    Alternative view: One subplot per cohort showing Test vs Control.
+    Useful when you have fewer cohorts and want to compare directly.
+    """
+    cohorts = sorted(vintage_df["COHORT"].unique())
+    n_cohorts = len(cohorts)
+    
+    if n_cohorts == 0:
+        print(f"    WARNING: No cohorts to plot for {mne}")
+        return
+    
+    # Calculate grid dimensions
+    n_cols = min(3, n_cohorts)
+    n_rows = (n_cohorts + n_cols - 1) // n_cols
+    
+    # FIX: Limit figure size
+    fig_width = min(5 * n_cols, 15)
+    fig_height = min(4 * n_rows, 12)
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    
+    for idx, cohort in enumerate(cohorts):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+        
+        cohort_data = vintage_df[vintage_df["COHORT"] == cohort]
+        if cohort_data.empty:
+            continue
+        
+        window_days = int(cohort_data["WINDOW_DAYS"].iloc[0])
+        final_row = cohort_data[cohort_data["DAY"] == cohort_data["DAY"].max()].iloc[0]
+        
+        # Plot Test and Control
+        ax.plot(cohort_data["DAY"], cohort_data["TEST_RATE"], 
+                marker='o', linewidth=1.5, markersize=3, color='#2E86AB',
+                label=f'Test (n={int(final_row["TEST_CLIENTS"]):,})')
+        ax.plot(cohort_data["DAY"], cohort_data["CTRL_RATE"], 
+                marker='s', linewidth=1.5, markersize=3, color='#A23B72',
+                label=f'Control (n={int(final_row["CTRL_CLIENTS"]):,})')
+        
+        # Add lift annotation
+        ax.annotate(
+            f'Lift: {final_row["ABS_LIFT"]:.2f}pp\n[{final_row["CI_LOWER"]:.2f}, {final_row["CI_UPPER"]:.2f}]',
+            xy=(0.95, 0.05), xycoords='axes fraction',
+            fontsize=8, ha='right', va='bottom',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+        )
+        
+        ax.set_title(f'Cohort: {cohort}', fontsize=10)
+        ax.set_xlabel("Days", fontsize=9)
+        ax.set_ylabel("Rate (%)", fontsize=9)
+        ax.legend(fontsize=7, loc='upper left')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, window_days)
+        ax.set_ylim(0, None)
+    
+    # Hide empty subplots
+    for idx in range(n_cohorts, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].set_visible(False)
+    
+    fig.suptitle(f"{mne} - {config['description']} | {config['success_type']}", fontsize=13, y=1.02)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
     
     print(f"    Plot saved: {save_path}")
@@ -576,15 +701,19 @@ def run_vintage_analysis(mne):
         print("    WARNING: No vintage data generated!")
         return None, None
     
-    # Step 5: Generate plots for each cohort
+    # Step 5: Generate plots - ALL cohorts on one chart per campaign
     print("\n[7] Generating plots...")
     cohorts = sorted(vintage_table["COHORT"].unique())
     print(f"    Found {len(cohorts)} cohorts")
     
-    for cohort in cohorts:
-        cohort_df = vintage_table[vintage_table["COHORT"] == cohort]
-        save_path = f"/user/427966379/{mne}_vintage_{cohort}.png"
-        plot_cohort_vintage(cohort_df, cohort, mne, config, save_path)
+    # Plot 1: All cohorts - Test curves on top, Control curves on bottom
+    save_path_1 = f"/user/427966379/{mne}_vintage_all_cohorts.png"
+    plot_campaign_vintage(vintage_table, mne, config, save_path_1)
+    
+    # Plot 2: Grid view - one subplot per cohort with Test vs Control
+    if len(cohorts) <= 12:  # Only if not too many cohorts
+        save_path_2 = f"/user/427966379/{mne}_vintage_grid.png"
+        plot_test_vs_control_by_cohort(vintage_table, mne, config, save_path_2)
     
     # Step 6: Generate summary table
     print("\n[8] Summary Table (Final Rates by Cohort):")
