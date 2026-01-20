@@ -1,45 +1,38 @@
-Yeah, I get it. You need to figure out if this is a snapshot table (latest partition has everything) or if records are spread across partitions (need a range).
-Here's diagnostic code to figure that out:
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, min, max, countDistinct
+from pyspark.sql.functions import col, count, countDistinct, lit
 
 spark = SparkSession.builder \
     .appName("ODS Partition Diagnostic") \
     .getOrCreate()
 
-# Base path without the partition
-base_path = "/prod/01347/app/LS20/data/SparkJobData/"
+# Read two specific partitions
+df_jan20 = spark.read.parquet("/prod/01347/app/LS20/data/SparkJobData/effectDate=2026-01-20") \
+    .withColumn("partition_date", lit("2026-01-20"))
 
-# 1. List available partitions
-partitions_df = spark.read.parquet(base_path)
-partitions_df.select("effectDate").distinct().orderBy("effectDate").show(100, truncate=False)
+df_jan19 = spark.read.parquet("/prod/01347/app/LS20/data/SparkJobData/effectDate=2026-01-19") \
+    .withColumn("partition_date", lit("2026-01-19"))
 
-# 2. Count records per partition
-partitions_df.groupBy("effectDate").count().orderBy("effectDate").show(100)
+# Count records in each
+print("Records in 2026-01-20:", df_jan20.count())
+print("Records in 2026-01-19:", df_jan19.count())
 
-# 3. Check if same CLNT_ID + OFFR_ID appears in multiple partitions
-# (this tells you if it's snapshot vs append)
-partitions_df.groupBy("CLNT_ID", "OFFR_ID") \
-    .agg(countDistinct("effectDate").alias("partition_count")) \
-    .filter(col("partition_count") > 1) \
-    .count()
+# Check overlap - do same CLNT_ID + OFFR_ID appear in both?
+keys_jan20 = df_jan20.select("CLNT_ID", "OFFR_ID").distinct()
+keys_jan19 = df_jan19.select("CLNT_ID", "OFFR_ID").distinct()
 
-# 4. For a sample record, see which partitions it appears in
-sample_clnt = partitions_df.select("CLNT_ID").first()[0]
-partitions_df.filter(col("CLNT_ID") == sample_clnt) \
-    .select("CLNT_ID", "OFFR_ID", "effectDate", "UPDT_TMSTMP") \
-    .orderBy("effectDate") \
-    .show(50, truncate=False)
+overlap = keys_jan20.intersect(keys_jan19).count()
+only_in_jan20 = keys_jan20.subtract(keys_jan19).count()
+only_in_jan19 = keys_jan19.subtract(keys_jan20).count()
 
-# 5. Compare latest partition vs second-latest
-# Do they have overlapping records?
-latest = partitions_df.filter(col("effectDate") == "2026-01-20").select("CLNT_ID", "OFFR_ID")
-# adjust date below to second-latest partition
-second_latest = partitions_df.filter(col("effectDate") == "2026-01-19").select("CLNT_ID", "OFFR_ID")
+print(f"\nOverlapping records (in both): {overlap}")
+print(f"Only in 2026-01-20: {only_in_jan20}")
+print(f"Only in 2026-01-19: {only_in_jan19}")
 
-overlap = latest.intersect(second_latest).count()
-print(f"Overlapping records between partitions: {overlap}")
-This will tell you:
-If records repeat across partitions → snapshot (use latest only)
-If records are unique per partition → append (use date range based on your treatment window)
-Want me to add this diagnostic pattern to the doc as well, or just run it first to see what you find?
+# Interpretation
+if overlap > 0 and only_in_jan20 > 0:
+    print("\n--> Looks like SNAPSHOT with incremental adds. Use latest partition.")
+elif overlap == 0:
+    print("\n--> Looks like APPEND. Use date range based on treatment window.")
+else:
+    print("\n--> Check results - may need more investigation.")
+Run that and it'll tell you whether to use latest or a range.
